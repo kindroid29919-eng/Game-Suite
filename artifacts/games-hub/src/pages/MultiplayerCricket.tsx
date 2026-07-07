@@ -368,14 +368,34 @@ export default function MultiplayerCricket() {
                 <div className="flex gap-3">
                   <div className="flex-1 flex flex-col gap-1.5">
                     <label className="text-[10px] font-mono text-[#6b6b9a] uppercase tracking-widest">Overs (1–20)</label>
-                    <input type="number" min={1} max={20} value={config.totalOvers}
-                      onChange={e => setConfig(c => ({ ...c, totalOvers: Math.max(1, Math.min(20, parseInt(e.target.value) || 1)) }))}
-                      className="bg-[#06060f] border border-[#1e1e3a] h-11 rounded-xl px-4 font-mono text-[#e2e2f2] outline-none focus:border-[#818cf8] transition-all" />
+                      <input
+                        type="number"
+                        min={1}
+                        max={20}
+                        value={config.totalOvers === 1 ? "" : config.totalOvers}
+                        placeholder="1"
+                        onChange={e =>
+                          setConfig(c => ({
+                            ...c,
+                            totalOvers: Math.max(1, Math.min(20, Number(e.target.value || 1)))
+                          }))
+                        }
+                               className="bg-[#06060f] border border-[#1e1e3a] h-11 rounded-xl px-4 font-mono text-[#e2e2f2] outline-none focus:border-[#818cf8] transition-all" />
                   </div>
                   <div className="flex-1 flex flex-col gap-1.5">
                     <label className="text-[10px] font-mono text-[#6b6b9a] uppercase tracking-widest">Wickets (1–10)</label>
-                    <input type="number" min={1} max={10} value={config.totalWickets}
-                      onChange={e => setConfig(c => ({ ...c, totalWickets: Math.max(1, Math.min(10, parseInt(e.target.value) || 1)) }))}
+                      <input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={config.totalWickets === 1 ? "" : config.totalWickets}
+                        placeholder="1"
+                        onChange={e =>
+                          setConfig(c => ({
+                            ...c,
+                            totalWickets: Math.max(1, Math.min(10, Number(e.target.value || 1)))
+                          }))
+                        }
                       className="bg-[#06060f] border border-[#1e1e3a] h-11 rounded-xl px-4 font-mono text-[#e2e2f2] outline-none focus:border-[#818cf8] transition-all" />
                   </div>
                 </div>
