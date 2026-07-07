@@ -116,12 +116,18 @@ export default function MultiplayerCricket() {
         const updated = payload.new as MpMatch;
         setMatch(updated);
 
-        // Detect if opponent has picked (for current ball)
         if (updated.game_state?.phase === 'pick') {
-          const opponentHasPick = isHost
-            ? updated.guest_pick !== null
-            : updated.host_pick !== null;
-          setOpponentPicked(opponentHasPick);
+          // New ball: both picks reset to null — allow picking again
+          if (updated.host_pick === null && updated.guest_pick === null) {
+            setMyPick(null);
+            setOpponentPicked(false);
+          } else {
+            // Opponent has already submitted their pick for this ball
+            const opponentHasPick = isHost
+              ? updated.guest_pick !== null
+              : updated.host_pick !== null;
+            setOpponentPicked(opponentHasPick);
+          }
         } else {
           setOpponentPicked(false);
         }

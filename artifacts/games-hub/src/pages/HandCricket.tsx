@@ -472,29 +472,36 @@ export default function HandCricket() {
           {state.difficulty === 'Expert' && <p className="text-[9px] text-[#ff3366] font-mono tracking-widest uppercase">Expert: 20 overs · 10 wickets · adaptive AI</p>}
         </div>
 
-        {/* Overs & Wickets */}
+        {/* Overs & Wickets — stepper buttons, no keyboard input */}
         <div className="flex gap-3">
-          <div className="flex-1 flex flex-col gap-1.5">
-            <label className="text-[10px] font-mono text-[#6b6b9a] uppercase tracking-widest">Overs (1–20)</label>
-            <input
-              type="number" min="1" max="20"
-              value={state.totalOvers}
-              onChange={e => setState(s => ({ ...s, totalOvers: Math.max(1, Math.min(20, parseInt(e.target.value) || 1)) }))}
-              disabled={state.difficulty === 'Expert'}
-              className="bg-[#06060f] border border-[#1e1e3a] h-11 rounded-xl px-4 font-mono text-[#e2e2f2] outline-none disabled:opacity-40 focus:border-[#00ff88] focus:shadow-[0_0_15px_rgba(0,255,136,0.15)] transition-all"
-            />
-          </div>
-          <div className="flex-1 flex flex-col gap-1.5">
-            <label className="text-[10px] font-mono text-[#6b6b9a] uppercase tracking-widest">Wickets (1–10)</label>
-            <input
-              type="number" min="1" max="10"
-              value={state.totalWickets}
-              onChange={e => setState(s => ({ ...s, totalWickets: Math.max(1, Math.min(10, parseInt(e.target.value) || 1)) }))}
-              onBlur={e => setState(s => ({ ...s, totalWickets: Math.max(1, Math.min(10, parseInt(e.target.value) || s.totalWickets)) }))}
-              disabled={state.difficulty === 'Expert'}
-              className="bg-[#06060f] border border-[#1e1e3a] h-11 rounded-xl px-4 font-mono text-[#e2e2f2] outline-none disabled:opacity-40 focus:border-[#00ff88] focus:shadow-[0_0_15px_rgba(0,255,136,0.15)] transition-all"
-            />
-          </div>
+          {([
+            { label: 'Overs', key: 'totalOvers' as const, min: 1, max: 20, color: '#00ff88' },
+            { label: 'Wickets', key: 'totalWickets' as const, min: 1, max: 10, color: '#818cf8' },
+          ] as const).map(({ label, key, min, max, color }) => {
+            const val = state[key];
+            const disabled = state.difficulty === 'Expert';
+            return (
+              <div key={key} className="flex-1 flex flex-col gap-1.5">
+                <label className="text-[10px] font-mono text-[#6b6b9a] uppercase tracking-widest">{label}</label>
+                <div className={`flex items-center bg-[#06060f] border rounded-xl overflow-hidden h-11 ${disabled ? 'opacity-40' : 'border-[#1e1e3a]'}`}>
+                  <button
+                    onClick={() => !disabled && setState(s => ({ ...s, [key]: Math.max(min, s[key] - 1) }))}
+                    disabled={disabled || val <= min}
+                    className="w-11 h-full flex items-center justify-center text-xl font-bold text-[#6b6b9a] hover:text-white active:bg-[#1c1c38] disabled:opacity-30 transition-colors flex-shrink-0"
+                  >−</button>
+                  <span
+                    className="flex-1 text-center font-mono font-bold text-lg"
+                    style={{ color, textShadow: `0 0 8px ${color}55` }}
+                  >{val}</span>
+                  <button
+                    onClick={() => !disabled && setState(s => ({ ...s, [key]: Math.min(max, s[key] + 1) }))}
+                    disabled={disabled || val >= max}
+                    className="w-11 h-full flex items-center justify-center text-xl font-bold text-[#6b6b9a] hover:text-white active:bg-[#1c1c38] disabled:opacity-30 transition-colors flex-shrink-0"
+                  >+</button>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         <button
@@ -502,10 +509,10 @@ export default function HandCricket() {
           className="h-14 mt-1 font-bold text-lg rounded-xl transition-all tracking-widest"
           style={{
             fontFamily: "'Orbitron', sans-serif",
-            background: state.playerName.trim() ? '#00ff88' : '#1c1c38',
-            color: state.playerName.trim() ? '#06060f' : '#4a4a70',
-            boxShadow: state.playerName.trim() ? '0 0 20px rgba(0,255,136,0.35)' : 'none',
-            cursor: state.playerName.trim() ? 'pointer' : 'not-allowed',
+            background: user ? '#00ff88' : '#1c1c38',
+            color: user ? '#06060f' : '#4a4a70',
+            boxShadow: user ? '0 0 20px rgba(0,255,136,0.35)' : 'none',
+            cursor: user ? 'pointer' : 'not-allowed',
           }}
         >START MATCH</button>
       </div>
