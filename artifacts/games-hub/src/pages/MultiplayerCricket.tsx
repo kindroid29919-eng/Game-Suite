@@ -61,6 +61,7 @@ function resolveBall(
     if (s.currentInnings === 1) {
       s.innings1Score = s.score;
       s.innings1Wickets = s.wicketsLost;
+      s.innings1Balls = s.ballsBowled;
       s.innings1Batter = s.firstBatter;
       s.target = s.score + 1;
       s.phase = 'innings_break';
@@ -529,9 +530,9 @@ export default function MultiplayerCricket() {
             </div>
           </div>
           <div className="grid grid-cols-3 gap-2">
-            <StatCell label="Balls" value={`${gs.ballsBowled + gs.innings1Score}`} />
+            <StatCell label="Inn1 Balls" value={gs.innings1Balls} />
             <StatCell label="Target" value={gs.target ?? '—'} />
-            <StatCell label="Overs" value={match.config.totalOvers} />
+            <StatCell label="Inn2 Balls" value={gs.ballsBowled} />
           </div>
           <button onClick={resetMatch}
             className="w-full h-14 font-bold text-lg rounded-xl tracking-widest transition-all mt-2"

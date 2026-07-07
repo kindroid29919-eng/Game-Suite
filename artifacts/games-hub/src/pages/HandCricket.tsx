@@ -148,7 +148,7 @@ function markOut(st: GameState, batterNum: number, bowlerNum: number, outType: s
   else if (outType === 'stump_chance') st.stats[bowler].stumpings++;
 }
 
-function checkInningsOver(st: GameState) {
+function checkInningsOver(st: GameState, userId?: string) {
   const isAllOut = st.wicketsLost >= st.totalWickets;
   const isOversUp = st.ballsBowled >= st.totalOvers * 6;
   const isTargetChased = st.target !== null && st.score >= st.target;
@@ -175,7 +175,7 @@ function checkInningsOver(st: GameState) {
         const pStats = st.stats.player;
         const won = st.resultMsg === 'You Won!';
         const tied = st.resultMsg === 'Match Tied!';
-        upsertPlayerStats(st.playerName, undefined, won, tied, {
+        upsertPlayerStats(st.playerName, userId, won, tied, {
           runs: pStats.runs,
           balls: pStats.balls,
           outs: pStats.outs,
@@ -273,6 +273,7 @@ export default function HandCricket() {
   // --- Core Game Logic ---
 
   const handleBall = (playerNum: number) => {
+    const userId = user?.id; // captured from auth context closure before setState
     setState(s => {
       if (s.pendingDismissal) return s;
 
@@ -383,15 +384,16 @@ export default function HandCricket() {
       }
 
       if (st.playerName) {
-        logBall(st.playerName, undefined, batterNum, bowlerNum, isOut ? 'out' : `${batterNum}_runs`, role === 'bat' ? 'batter' : 'bowler');
+        logBall(st.playerName, userId, batterNum, bowlerNum, isOut ? 'out' : `${batterNum}_runs`, role === 'bat' ? 'batter' : 'bowler');
       }
 
-      checkInningsOver(st);
+      checkInningsOver(st, userId);
       return st;
     });
   };
 
   const handleDismissalPick = (pick: number) => {
+    const userId = user?.id;
     setState(s => {
       if (!s.pendingDismissal) return s;
       const st = {
@@ -413,7 +415,7 @@ export default function HandCricket() {
       st.pendingDismissal = null;
       st.dismissalOptions = null;
       
-      checkInningsOver(st);
+      checkInningsOver(st, userId);
       return st;
     });
   };

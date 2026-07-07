@@ -161,6 +161,7 @@ export interface MpGameState {
   target: number | null;
   innings1Score: number;
   innings1Wickets: number;
+  innings1Balls: number;
   innings1Batter: 'host' | 'guest' | null;
   lastMsg: string;
   lastEvent: 'out' | 'six' | 'runs' | 'dot' | null;
@@ -197,6 +198,7 @@ function makeMpInitialState(config: MpConfig): MpGameState {
     target: null,
     innings1Score: 0,
     innings1Wickets: 0,
+    innings1Balls: 0,
     innings1Batter: null,
     lastMsg: '',
     lastEvent: null,
@@ -249,7 +251,7 @@ export async function joinMpMatch(
     if (fetchErr || !match) return null;
     if (match.host_id === guestId) return null; // can't join own match
 
-    // Update with guest + initial game state (host triggers this update, guest also triggers — last write wins, both idempotent)
+    // Conditional update: only succeeds if match is still waiting with no guest (prevents double-join race)
     const gameState = makeMpInitialState(match.config as MpConfig);
     const { data, error } = await supabase
       .from('mp_matches')
@@ -260,6 +262,8 @@ export async function joinMpMatch(
         game_state: gameState,
       })
       .eq('id', match.id)
+      .eq('status', 'waiting')
+      .is('guest_id', null)
       .select()
       .single();
     if (error) { console.error('joinMpMatch', error); return null; }
