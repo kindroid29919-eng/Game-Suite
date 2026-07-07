@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link } from 'wouter';
 import { motion } from 'framer-motion';
+import { useAuth } from '@/lib/authContext';
 
 const games = [
   {
@@ -30,9 +31,20 @@ const games = [
     glow: 'rgba(255,215,0,0.25)',
     tag: 'STRATEGY',
   },
+  {
+    path: '/multiplayer',
+    emoji: '⚔',
+    title: 'Multiplayer Cricket',
+    desc: 'Challenge a real player online — live',
+    accent: '#f472b6',
+    glow: 'rgba(244,114,182,0.25)',
+    tag: 'ONLINE',
+  },
 ];
 
 export default function Home() {
+  const { user, signOut, loading } = useAuth();
+
   return (
     <div
       className="min-h-[100dvh] w-full flex flex-col items-center p-4 md:p-8 relative overflow-hidden"
@@ -46,12 +58,41 @@ export default function Home() {
       }}
     >
       <div className="w-full max-w-md md:max-w-3xl flex flex-col gap-8 items-center">
+
+        {/* Auth bar */}
+        {!loading && (
+          <div className="w-full flex justify-end items-center gap-3 mt-2">
+            {user ? (
+              <>
+                <span className="font-mono text-[10px] text-[#6b6b9a] uppercase tracking-widest">
+                  <span className="text-[#00ff88]">{user.username}</span>
+                </span>
+                <button
+                  onClick={() => signOut()}
+                  className="font-mono text-[10px] uppercase tracking-widest text-[#4a4a70] hover:text-[#ff3366] transition-colors"
+                >
+                  Sign Out
+                </button>
+              </>
+            ) : (
+              <Link href="/login">
+                <span
+                  className="font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 rounded-lg border transition-all cursor-pointer"
+                  style={{ color: '#818cf8', borderColor: '#818cf840', background: '#818cf810' }}
+                >
+                  Sign In
+                </span>
+              </Link>
+            )}
+          </div>
+        )}
+
         {/* Header */}
         <motion.header
           initial={{ opacity: 0, y: -30 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="text-center mt-10 mb-2 w-full"
+          className="text-center mb-2 w-full"
         >
           <h1
             className="text-3xl md:text-5xl font-black uppercase tracking-[0.15em] mb-3"
@@ -69,13 +110,13 @@ export default function Home() {
         </motion.header>
 
         {/* Game Cards */}
-        <div className="flex flex-col md:grid md:grid-cols-3 gap-4 w-full">
+        <div className="flex flex-col md:grid md:grid-cols-2 gap-4 w-full">
           {games.map((g, i) => (
             <Link key={g.path} href={g.path} className="block group">
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.1 + 0.2 }}
+                transition={{ delay: i * 0.08 + 0.2 }}
                 whileHover={{ scale: 1.03, y: -3 }}
                 whileTap={{ scale: 0.97 }}
                 className="relative rounded-xl overflow-hidden cursor-pointer"
@@ -83,18 +124,9 @@ export default function Home() {
                   background: '#0c0c1e',
                   border: `1px solid rgba(255,255,255,0.06)`,
                   borderLeft: `3px solid ${g.accent}`,
-                  transition: 'box-shadow 0.25s',
-                }}
-                onHoverStart={e => {
-                  (e.target as HTMLElement).closest?.('.group')?.querySelectorAll?.('.card-inner')?.forEach?.((el: Element) => {
-                    (el as HTMLElement).style.boxShadow = `0 0 30px ${g.glow}`;
-                  });
                 }}
               >
-                <div
-                  className="card-inner p-6 flex flex-col gap-3 h-full rounded-xl transition-all duration-300"
-                  style={{ boxShadow: `0 0 0px transparent` }}
-                >
+                <div className="p-6 flex flex-col gap-3 h-full rounded-xl transition-all duration-300 group-hover:bg-[rgba(255,255,255,0.015)]">
                   {/* Tag */}
                   <div className="flex items-center justify-between">
                     <span
@@ -138,8 +170,8 @@ export default function Home() {
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.7 }}
-          className="font-mono text-xs text-[#6b6b9a] mt-4 pb-6"
+          transition={{ delay: 0.6 }}
+          className="font-mono text-xs text-[#6b6b9a] pb-6"
         >
           Built by{' '}
           <span

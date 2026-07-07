@@ -12,7 +12,8 @@ import {
   newExpertState, ExpertState, ExpertCtx
 } from '@/lib/cricketAI';
 
-import { loadPlayer, upsertPlayerStats, logBall, PlayerStats } from '@/lib/supabase';
+import { loadPlayer, upsertPlayerStats, logBall, getUserBallHistory, PlayerStats } from '@/lib/supabase';
+import { useAuth } from '@/lib/authContext';
 
 // --- Types & Initial State ---
 
@@ -54,6 +55,8 @@ interface GameState {
     bowl_after_wicket: Record<number, number>;
   };
   expertState: ExpertState;
+  historicalBatSeq: number[];
+  historicalBowlSeq: number[];
   stats: {
     player: { runs: number; balls: number; outs: number; balls_bowled: number; runs_conceded: number; catches: number; runouts: number; stumpings: number; bowled: number };
     CricBot: { runs: number; balls: number; outs: number; balls_bowled: number; runs_conceded: number; catches: number; runouts: number; stumpings: number; bowled: number };
@@ -91,6 +94,8 @@ const getInitialState = (): GameState => ({
   playerLastBowlOutcome: null,
   playerContextStats: { bat_after_boundary: {}, bat_after_wicket: {}, bowl_after_boundary: {}, bowl_after_wicket: {} },
   expertState: newExpertState(),
+  historicalBatSeq: [],
+  historicalBowlSeq: [],
   stats: {
     player: { runs: 0, balls: 0, outs: 0, balls_bowled: 0, runs_conceded: 0, catches: 0, runouts: 0, stumpings: 0, bowled: 0 },
     CricBot: { runs: 0, balls: 0, outs: 0, balls_bowled: 0, runs_conceded: 0, catches: 0, runouts: 0, stumpings: 0, bowled: 0 },
@@ -122,7 +127,7 @@ function buildExpertCtx(state: GameState, role: 'bat' | 'bowl'): ExpertCtx {
     last_outcome: role === 'bat' ? state.playerLastBatOutcome ?? undefined : state.playerLastBowlOutcome ?? undefined,
     after_boundary: role === 'bat' ? state.playerContextStats.bat_after_boundary : state.playerContextStats.bowl_after_boundary,
     after_wicket: role === 'bat' ? state.playerContextStats.bat_after_wicket : state.playerContextStats.bowl_after_wicket,
-    overall_seq: state.playerInputsMatch,
+    overall_seq: [...state.historicalBatSeq, ...state.playerInputsMatch],
     own_seq: role === 'bat' ? state.bowlerHistory : state.batterHistory,
   };
 }
@@ -170,7 +175,7 @@ function checkInningsOver(st: GameState) {
         const pStats = st.stats.player;
         const won = st.resultMsg === 'You Won!';
         const tied = st.resultMsg === 'Match Tied!';
-        upsertPlayerStats(st.playerName, won, tied, {
+        upsertPlayerStats(st.playerName, undefined, won, tied, {
           runs: pStats.runs,
           balls: pStats.balls,
           outs: pStats.outs,
@@ -189,31 +194,40 @@ function checkInningsOver(st: GameState) {
 // --- Main Component ---
 
 export default function HandCricket() {
+  const { user } = useAuth();
   const [state, setState] = useState<GameState>(getInitialState());
   const [playerStats, setPlayerStats] = useState<PlayerStats | null>(null);
   const [nameError, setNameError] = useState('');
   const [statsLoading, setStatsLoading] = useState(false);
 
-  // Auto-load career stats when username is typed (debounced)
+  // Load career stats when user is available
   useEffect(() => {
-    const name = state.playerName.trim();
-    if (!name) { setPlayerStats(null); return; }
-    const t = setTimeout(async () => {
-      setStatsLoading(true);
-      const p = await loadPlayer(name);
+    if (!user) { setPlayerStats(null); return; }
+    setStatsLoading(true);
+    loadPlayer(user.username).then(p => {
       setPlayerStats(p);
       setStatsLoading(false);
-    }, 600);
-    return () => clearTimeout(t);
-  }, [state.playerName]);
+    });
+  }, [user?.username]);
 
   const handleStartMatch = async () => {
-    if (!state.playerName.trim()) {
-      setNameError('Player ID is required to save stats.');
+    if (!user) {
+      setNameError('Sign in to save stats and use AI learning.');
       return;
     }
     setNameError('');
-    setState(s => ({ ...s, phase: 'toss', playerName: s.playerName.trim() }));
+    // Load historical ball data to seed the AI with user's past patterns
+    const hist = await getUserBallHistory(user.id);
+    setState(s => ({
+      ...s,
+      phase: 'toss',
+      playerName: user.username,
+      // Pre-seed AI history so CricBot knows your patterns from day one
+      batterHistory: hist.batSeq.slice(-30),
+      bowlerHistory: hist.bowlSeq.slice(-30),
+      historicalBatSeq: hist.batSeq,
+      historicalBowlSeq: hist.bowlSeq,
+    }));
   };
 
   const handleToss = (call: 'heads' | 'tails') => {
@@ -369,7 +383,7 @@ export default function HandCricket() {
       }
 
       if (st.playerName) {
-        logBall(st.playerName, batterNum, bowlerNum, isOut ? 'out' : `${batterNum}_runs`, role === 'bat' ? 'batter' : 'bowler');
+        logBall(st.playerName, undefined, batterNum, bowlerNum, isOut ? 'out' : `${batterNum}_runs`, role === 'bat' ? 'batter' : 'bowler');
       }
 
       checkInningsOver(st);
@@ -415,29 +429,28 @@ export default function HandCricket() {
       >
         <h2 className="text-lg font-bold tracking-widest text-[#00ff88]" style={{ fontFamily: "'Orbitron', sans-serif" }}>MATCH SETTINGS</h2>
 
-        {/* Player ID — required */}
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between">
-            <label className="text-[10px] font-mono text-[#6b6b9a] uppercase tracking-widest">Player ID <span className="text-[#ff3366]">*</span></label>
-            {statsLoading && <span className="text-[9px] font-mono text-[#6b6b9a] animate-pulse">Loading stats…</span>}
-            {!statsLoading && playerStats && state.playerName.trim() && (
-              <span className="text-[9px] font-mono text-[#00ff88]">✓ Profile found</span>
-            )}
-            {!statsLoading && !playerStats && state.playerName.trim().length >= 2 && (
-              <span className="text-[9px] font-mono text-[#ffd700]">New profile</span>
-            )}
+        {/* Player identity */}
+        {user ? (
+          <div className="flex items-center justify-between bg-[#06060f] border border-[#1e1e3a] rounded-xl px-4 h-12">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-[#00ff88]" style={{ boxShadow: '0 0 6px #00ff88' }} />
+              <span className="font-mono text-[#00ff88] font-bold">{user.username}</span>
+            </div>
+            <span className="text-[9px] font-mono text-[#6b6b9a] uppercase tracking-widest">
+              {statsLoading ? 'Loading…' : playerStats ? '✓ Profile loaded' : 'New player'}
+            </span>
           </div>
-          <input
-            type="text"
-            value={state.playerName}
-            onChange={e => { setState(s => ({ ...s, playerName: e.target.value })); setNameError(''); }}
-            className={`bg-[#06060f] border h-12 rounded-xl px-4 font-mono text-[#e2e2f2] focus:shadow-[0_0_15px_rgba(0,255,136,0.2)] outline-none transition-all placeholder:text-[#2a2a50] ${nameError ? 'border-[#ff3366]' : 'border-[#1e1e3a] focus:border-[#00ff88]'}`}
-            placeholder="[ ENTER YOUR ID ]"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          {nameError && <p className="text-[10px] font-mono text-[#ff3366]">{nameError}</p>}
-        </div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <div className="bg-[#06060f] border border-[#ff336640] rounded-xl px-4 py-3 text-center">
+              <p className="text-[11px] font-mono text-[#ff3366]">Sign in to save stats & unlock AI learning</p>
+              <Link href="/login">
+                <span className="text-[10px] font-mono text-[#818cf8] underline cursor-pointer">→ Sign in / Create account</span>
+              </Link>
+            </div>
+            {nameError && <p className="text-[10px] font-mono text-[#ff3366]">{nameError}</p>}
+          </div>
+        )}
 
         {/* Difficulty */}
         <div className="flex flex-col gap-2">

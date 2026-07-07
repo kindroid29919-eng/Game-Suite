@@ -7,6 +7,9 @@ import Home from '@/pages/Home';
 import RockPaperScissors from '@/pages/RockPaperScissors';
 import GuessTheNumber from '@/pages/GuessTheNumber';
 import HandCricket from '@/pages/HandCricket';
+import MultiplayerCricket from '@/pages/MultiplayerCricket';
+import Login from '@/pages/Login';
+import { AuthProvider } from '@/lib/authContext';
 
 const queryClient = new QueryClient();
 
@@ -17,6 +20,8 @@ function Router() {
       <Route path="/rps" component={RockPaperScissors} />
       <Route path="/guess" component={GuessTheNumber} />
       <Route path="/cricket" component={HandCricket} />
+      <Route path="/multiplayer" component={MultiplayerCricket} />
+      <Route path="/login" component={Login} />
       <Route component={NotFound} />
     </Switch>
   );
@@ -25,12 +30,14 @@ function Router() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-          <Router />
-        </WouterRouter>
-        <Toaster />
-      </TooltipProvider>
+      <AuthProvider>
+        <TooltipProvider>
+          <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+            <Router />
+          </WouterRouter>
+          <Toaster />
+        </TooltipProvider>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }
