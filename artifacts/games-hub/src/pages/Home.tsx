@@ -3,51 +3,12 @@ import { Link } from 'wouter';
 import { motion } from 'framer-motion';
 import { useAuth } from '@/lib/authContext';
 
-const games = [
-  {
-    path: '/rps',
-    emoji: '✊',
-    title: 'Rock Paper Scissors',
-    desc: 'Classic hand battle vs the computer',
-    accent: '#00ff88',
-    glow: 'rgba(0,255,136,0.25)',
-    tag: 'QUICK PLAY',
-  },
-  {
-    path: '/guess',
-    emoji: '🔢',
-    title: 'Guess the Number',
-    desc: 'Can you find the secret number?',
-    accent: '#818cf8',
-    glow: 'rgba(129,140,248,0.25)',
-    tag: 'PUZZLE',
-  },
-  {
-    path: '/cricket',
-    emoji: '🏏',
-    title: 'Hand Cricket',
-    desc: 'Full T20 vs CricBot — bat, bowl, win',
-    accent: '#ffd700',
-    glow: 'rgba(255,215,0,0.25)',
-    tag: 'STRATEGY',
-  },
-  {
-    path: '/multiplayer',
-    emoji: '⚔',
-    title: 'Multiplayer Cricket',
-    desc: 'Challenge a real player online — live',
-    accent: '#f472b6',
-    glow: 'rgba(244,114,182,0.25)',
-    tag: 'ONLINE',
-  },
-];
-
 export default function Home() {
   const { user, signOut, loading } = useAuth();
 
   return (
     <div
-      className="min-h-[100dvh] w-full flex flex-col items-center p-4 md:p-8 relative overflow-hidden"
+      className="min-h-[100dvh] w-full flex flex-col items-center p-4 relative overflow-hidden"
       style={{
         backgroundImage: `
           radial-gradient(ellipse 70% 40% at 50% -5%, rgba(0,255,136,0.08) 0%, transparent 60%),
@@ -57,11 +18,11 @@ export default function Home() {
         backgroundSize: 'auto, 40px 40px, 40px 40px',
       }}
     >
-      <div className="w-full max-w-md md:max-w-3xl flex flex-col gap-8 items-center">
+      <div className="w-full max-w-md flex flex-col gap-6 items-center min-h-[100dvh]">
 
         {/* Auth bar */}
         {!loading && (
-          <div className="w-full flex justify-end items-center gap-3 mt-2">
+          <div className="w-full flex justify-end items-center gap-3 mt-3">
             {user ? (
               <>
                 <span className="font-mono text-[10px] text-[#6b6b9a] uppercase tracking-widest">
@@ -87,91 +48,151 @@ export default function Home() {
           </div>
         )}
 
-        {/* Header */}
-        <motion.header
-          initial={{ opacity: 0, y: -30 }}
+        {/* Hero */}
+        <motion.div
+          initial={{ opacity: 0, y: -24 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="text-center mb-2 w-full"
+          className="flex flex-col items-center gap-3 mt-8 mb-4"
         >
+          <motion.div
+            animate={{ rotate: [0, -8, 8, -4, 4, 0] }}
+            transition={{ duration: 1.2, delay: 0.4, ease: 'easeInOut' }}
+            className="text-7xl leading-none"
+          >
+            🏏
+          </motion.div>
           <h1
-            className="text-3xl md:text-5xl font-black uppercase tracking-[0.15em] mb-3"
+            className="text-4xl font-black uppercase tracking-[0.12em] text-center"
             style={{
               fontFamily: "'Orbitron', sans-serif",
               color: '#00ff88',
-              textShadow: '0 0 20px rgba(0,255,136,0.6), 0 0 60px rgba(0,255,136,0.2)',
+              textShadow: '0 0 24px rgba(0,255,136,0.6), 0 0 60px rgba(0,255,136,0.2)',
             }}
           >
-            AhaD's Games Hub
+            Hand Cricket
           </h1>
-          <p className="font-mono text-xs uppercase tracking-[0.3em] text-[#6b6b9a]">
-            — Select a game —
+          <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-[#6b6b9a]">
+            — Choose your mode —
           </p>
-        </motion.header>
+        </motion.div>
 
-        {/* Game Cards */}
-        <div className="flex flex-col md:grid md:grid-cols-2 gap-4 w-full">
-          {games.map((g, i) => (
-            <Link key={g.path} href={g.path} className="block group">
+        {/* Main action buttons */}
+        <div className="flex flex-col gap-3 w-full">
+          {[
+            {
+              href: '/cricket',
+              label: 'Single Player',
+              sub: 'vs CricBot AI',
+              accent: '#00ff88',
+              glow: 'rgba(0,255,136,0.3)',
+              bg: 'rgba(0,255,136,0.07)',
+              delay: 0.15,
+            },
+            {
+              href: '/multiplayer',
+              label: 'Multi Player',
+              sub: 'Challenge a friend online',
+              accent: '#f472b6',
+              glow: 'rgba(244,114,182,0.3)',
+              bg: 'rgba(244,114,182,0.07)',
+              delay: 0.25,
+            },
+            {
+              href: '/stats',
+              label: 'Stats',
+              sub: 'Career records & head-to-head',
+              accent: '#818cf8',
+              glow: 'rgba(129,140,248,0.3)',
+              bg: 'rgba(129,140,248,0.07)',
+              delay: 0.35,
+            },
+          ].map(btn => (
+            <Link key={btn.href} href={btn.href} className="block group">
               <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.08 + 0.2 }}
-                whileHover={{ scale: 1.03, y: -3 }}
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: btn.delay }}
+                whileHover={{ scale: 1.02, x: 4 }}
                 whileTap={{ scale: 0.97 }}
-                className="relative rounded-xl overflow-hidden cursor-pointer"
+                className="w-full rounded-2xl flex items-center gap-5 px-6 py-5 cursor-pointer transition-all duration-200"
                 style={{
-                  background: '#0c0c1e',
-                  border: `1px solid rgba(255,255,255,0.06)`,
-                  borderLeft: `3px solid ${g.accent}`,
+                  background: btn.bg,
+                  border: `1.5px solid ${btn.accent}40`,
+                  boxShadow: `0 0 0 0 ${btn.glow}`,
+                }}
+                onMouseEnter={e => {
+                  (e.currentTarget as HTMLElement).style.boxShadow = `0 0 24px ${btn.glow}`;
+                  (e.currentTarget as HTMLElement).style.borderColor = `${btn.accent}80`;
+                }}
+                onMouseLeave={e => {
+                  (e.currentTarget as HTMLElement).style.boxShadow = '0 0 0 0 transparent';
+                  (e.currentTarget as HTMLElement).style.borderColor = `${btn.accent}40`;
                 }}
               >
-                <div className="p-6 flex flex-col gap-3 h-full rounded-xl transition-all duration-300 group-hover:bg-[rgba(255,255,255,0.015)]">
-                  {/* Tag */}
-                  <div className="flex items-center justify-between">
-                    <span
-                      className="text-[9px] font-mono uppercase tracking-widest px-2 py-0.5 rounded-full border"
-                      style={{ color: g.accent, borderColor: `${g.accent}40`, background: `${g.accent}10` }}
-                    >
-                      {g.tag}
-                    </span>
-                    <span
-                      className="text-[10px] font-mono opacity-0 group-hover:opacity-100 transition-opacity"
-                      style={{ color: g.accent }}
-                    >
-                      PLAY →
-                    </span>
+                <div className="flex-1">
+                  <div
+                    className="text-xl font-black uppercase tracking-wider"
+                    style={{ fontFamily: "'Orbitron', sans-serif", color: btn.accent }}
+                  >
+                    {btn.label}
                   </div>
-
-                  <div className="text-5xl leading-none mt-1">{g.emoji}</div>
-
-                  <div>
-                    <h2
-                      className="font-bold text-base uppercase tracking-wider mb-1"
-                      style={{ fontFamily: "'Orbitron', sans-serif", color: g.accent }}
-                    >
-                      {g.title}
-                    </h2>
-                    <p className="text-xs font-mono text-[#6b6b9a] leading-relaxed">{g.desc}</p>
-                  </div>
+                  <div className="text-[11px] font-mono text-[#6b6b9a] mt-0.5">{btn.sub}</div>
                 </div>
-
-                {/* Bottom glow line */}
-                <div
-                  className="absolute inset-x-0 bottom-0 h-[1px]"
-                  style={{ background: `linear-gradient(90deg, ${g.accent}60, transparent)` }}
-                />
+                <span
+                  className="font-mono text-lg opacity-60 group-hover:opacity-100 group-hover:translate-x-1 transition-all"
+                  style={{ color: btn.accent }}
+                >
+                  →
+                </span>
               </motion.div>
             </Link>
           ))}
         </div>
 
-        {/* Credits */}
+        {/* Side Games divider */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5 }}
+          className="w-full flex flex-col items-center gap-4 mt-2"
+        >
+          <div className="w-full flex items-center gap-3">
+            <div className="flex-1 h-px bg-[#1e1e3a]" />
+            <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-[#3a3a5c]">side games</span>
+            <div className="flex-1 h-px bg-[#1e1e3a]" />
+          </div>
+
+          <Link href="/side-games" className="block group w-full">
+            <motion.div
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.98 }}
+              className="w-full rounded-xl flex items-center justify-between px-5 py-3.5 cursor-pointer transition-all"
+              style={{
+                background: '#0c0c1e',
+                border: '1px solid #1e1e3a',
+              }}
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">🎮</span>
+                <div>
+                  <div className="font-mono text-sm font-bold text-[#4a4a70] group-hover:text-[#6b6b9a] transition-colors uppercase tracking-wider">
+                    Side Games
+                  </div>
+                  <div className="text-[10px] font-mono text-[#3a3a5c]">Rock Paper Scissors · Guess the Number</div>
+                </div>
+              </div>
+              <span className="font-mono text-sm text-[#3a3a5c] group-hover:text-[#4a4a70] transition-colors">→</span>
+            </motion.div>
+          </Link>
+        </motion.div>
+
+        {/* Footer */}
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.6 }}
-          className="font-mono text-xs text-[#6b6b9a] pb-6"
+          transition={{ delay: 0.65 }}
+          className="font-mono text-[10px] text-[#3a3a5c] pb-6 mt-auto"
         >
           Built by{' '}
           <span

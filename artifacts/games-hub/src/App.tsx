@@ -9,6 +9,8 @@ import GuessTheNumber from '@/pages/GuessTheNumber';
 import HandCricket from '@/pages/HandCricket';
 import MultiplayerCricket from '@/pages/MultiplayerCricket';
 import Login from '@/pages/Login';
+import Stats from '@/pages/Stats';
+import SideGames from '@/pages/SideGames';
 import { AuthProvider } from '@/lib/authContext';
 
 const queryClient = new QueryClient();
@@ -17,10 +19,12 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={Home} />
-      <Route path="/rps" component={RockPaperScissors} />
-      <Route path="/guess" component={GuessTheNumber} />
       <Route path="/cricket" component={HandCricket} />
       <Route path="/multiplayer" component={MultiplayerCricket} />
+      <Route path="/stats" component={Stats} />
+      <Route path="/side-games" component={SideGames} />
+      <Route path="/rps" component={RockPaperScissors} />
+      <Route path="/guess" component={GuessTheNumber} />
       <Route path="/login" component={Login} />
       <Route component={NotFound} />
     </Switch>

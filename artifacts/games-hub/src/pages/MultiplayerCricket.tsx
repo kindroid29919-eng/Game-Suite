@@ -7,7 +7,7 @@ import { Keypad } from '@/components/Keypad';
 import { StatCell } from '@/components/StatCell';
 import { useAuth } from '@/lib/authContext';
 import {
-  createMpMatch, joinMpMatch, getMpMatch, updateMpMatch,
+  createMpMatch, joinMpMatch, getMpMatch, updateMpMatch, upsertMpStats,
   MpMatch, MpGameState, MpConfig,
 } from '@/lib/supabase';
 import { supabase } from '@/lib/supabase';
@@ -96,6 +96,25 @@ export default function MultiplayerCricket() {
   const [lobbyError, setLobbyError] = useState('');
   const [loadingAction, setLoadingAction] = useState(false);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const [statsSaved, setStatsSaved] = useState(false);
+
+  // Idempotency helpers — track saved match IDs in localStorage so refreshing
+  // a finished result screen does not double-count stats.
+  function wasStatsSaved(matchId: string): boolean {
+    try {
+      const ids = JSON.parse(localStorage.getItem('hc_mp_stats_saved') || '[]') as string[];
+      return ids.includes(matchId);
+    } catch { return false; }
+  }
+  function markStatsSaved(matchId: string): void {
+    try {
+      const ids = JSON.parse(localStorage.getItem('hc_mp_stats_saved') || '[]') as string[];
+      if (!ids.includes(matchId)) {
+        ids.push(matchId);
+        localStorage.setItem('hc_mp_stats_saved', JSON.stringify(ids.slice(-50)));
+      }
+    } catch { /* silent */ }
+  }
 
   const isHost = match ? match.host_id === user?.id : false;
   const gs = match?.game_state as MpGameState | undefined;
@@ -117,12 +136,10 @@ export default function MultiplayerCricket() {
         setMatch(updated);
 
         if (updated.game_state?.phase === 'pick') {
-          // New ball: both picks reset to null — allow picking again
           if (updated.host_pick === null && updated.guest_pick === null) {
             setMyPick(null);
             setOpponentPicked(false);
           } else {
-            // Opponent has already submitted their pick for this ball
             const opponentHasPick = isHost
               ? updated.guest_pick !== null
               : updated.host_pick !== null;
@@ -162,13 +179,26 @@ export default function MultiplayerCricket() {
     setOpponentPicked(false);
   }, [match?.host_pick, match?.guest_pick, isHost]);
 
-  // Host handles guest_action (toss call / bat/bowl choice)
+  // Host handles guest_action (toss call, bat/bowl choice)
   useEffect(() => {
     if (!match || !isHost) return;
     const gs = match.game_state;
     const ga = match.guest_action;
     if (!ga) return;
 
+    // Guest called H/T during toss_call phase
+    if (gs.phase === 'toss_call' && gs.tossCaller === 'guest' && (ga === 'heads' || ga === 'tails')) {
+      const newTossResult: 'heads' | 'tails' = Math.random() < 0.5 ? 'heads' : 'tails';
+      const guestWon = ga === newTossResult;
+      const tossWinner: 'host' | 'guest' = guestWon ? 'guest' : 'host';
+      updateMpMatch(match.id, {
+        game_state: { ...gs, phase: 'toss', tossResult: newTossResult, tossWinner },
+        guest_action: null,
+      });
+      return;
+    }
+
+    // Guest chose bat/bowl after winning toss
     if (gs.phase === 'toss' && gs.tossWinner === 'guest' && (ga === 'bat' || ga === 'bowl')) {
       const firstBatter: 'host' | 'guest' = ga === 'bat' ? 'guest' : 'host';
       updateMpMatch(match.id, {
@@ -178,7 +208,7 @@ export default function MultiplayerCricket() {
     }
   }, [match?.guest_action, isHost]);
 
-  // Guest is waiting → poll occasionally if realtime misses
+  // Guest polling fallback
   useEffect(() => {
     if (!match?.id || !match.game_state || match.game_state.phase === 'result') return;
     const t = setInterval(async () => {
@@ -187,6 +217,46 @@ export default function MultiplayerCricket() {
     }, 5000);
     return () => clearInterval(t);
   }, [match?.id, match?.game_state?.phase, match?.room_code]);
+
+  // Save stats when match ends — idempotent via localStorage so page refreshes
+  // on the result screen don't double-count.
+  useEffect(() => {
+    if (!match || !user || !gs || gs.phase !== 'result') return;
+    if (wasStatsSaved(match.id)) {
+      setStatsSaved(true); // already saved in a prior session
+      return;
+    }
+
+    const myRole: 'host' | 'guest' = isHost ? 'host' : 'guest';
+    const iBatFirst = gs.innings1Batter === myRole;
+
+    const myBatRuns    = iBatFirst ? gs.innings1Score   : gs.score;
+    const myBatBalls   = iBatFirst ? gs.innings1Balls   : gs.ballsBowled;
+    const myBatWickets = iBatFirst ? gs.innings1Wickets : gs.wicketsLost;
+    const myBowlWickets= iBatFirst ? gs.wicketsLost     : gs.innings1Wickets;
+    const myBowlRuns   = iBatFirst ? gs.score           : gs.innings1Score;
+    const myBowlBalls  = iBatFirst ? gs.ballsBowled     : gs.innings1Balls;
+
+    const won  = (isHost && gs.resultMsg.includes('HOST')) || (!isHost && gs.resultMsg.includes('GUEST'));
+    const tied = gs.resultMsg.includes('TIED');
+    const opponentUsername = isHost ? (match.guest_username ?? '') : match.host_username;
+
+    upsertMpStats(user.username, user.id, won, tied, {
+      bat_runs:   myBatRuns,
+      bat_balls:  myBatBalls,
+      bat_outs:   myBatWickets,
+      team_score: myBatRuns,
+      bowl_wkts:  myBowlWickets,
+      bowl_runs:  myBowlRuns,
+      bowl_balls: myBowlBalls,
+      catches:    0,
+    }, opponentUsername).then(ok => {
+      if (ok) {
+        markStatsSaved(match.id);
+        setStatsSaved(true);
+      }
+    });
+  }, [gs?.phase, match?.id]);
 
   // ── Lobby Actions ──────────────────────────────────────────────────────────
 
@@ -219,7 +289,28 @@ export default function MultiplayerCricket() {
     setTimeout(() => setCopied(false), 2000);
   }, [match?.room_code]);
 
-  // ── Toss / Choice Actions ──────────────────────────────────────────────────
+  // ── Toss Call (H/T pick) ───────────────────────────────────────────────────
+
+  const handleTossCall = useCallback(async (call: 'heads' | 'tails') => {
+    if (!match || !gs) return;
+    const amCaller = gs.tossCaller === (isHost ? 'host' : 'guest');
+    if (!amCaller) return;
+
+    if (isHost) {
+      // Host is the caller — compute result directly
+      const newTossResult: 'heads' | 'tails' = Math.random() < 0.5 ? 'heads' : 'tails';
+      const hostWon = call === newTossResult;
+      const tossWinner: 'host' | 'guest' = hostWon ? 'host' : 'guest';
+      await updateMpMatch(match.id, {
+        game_state: { ...gs, phase: 'toss', tossResult: newTossResult, tossWinner },
+      });
+    } else {
+      // Guest is the caller — send to host to process
+      await updateMpMatch(match.id, { guest_action: call });
+    }
+  }, [match, gs, isHost]);
+
+  // ── Bat/Bowl Choice ────────────────────────────────────────────────────────
 
   const handleBatBowl = useCallback(async (choice: 'bat' | 'bowl') => {
     if (!match || !gs) return;
@@ -230,7 +321,6 @@ export default function MultiplayerCricket() {
         game_state: { ...gs, firstBatter, phase: 'pick' },
       });
     } else {
-      // Guest sends action, host picks it up
       await updateMpMatch(match.id, { guest_action: choice });
     }
   }, [match, gs, isHost]);
@@ -288,7 +378,7 @@ export default function MultiplayerCricket() {
         <div className="flex flex-col gap-4 items-center justify-center flex-1 p-6 text-center">
           <div className="text-5xl">🔒</div>
           <p className="font-mono text-[#6b6b9a] text-sm">Sign in to play multiplayer.</p>
-          <Link href="/login" className="mt-2 px-6 py-3 rounded-xl font-bold font-mono tracking-widest text-sm"
+          <Link href="/login" className="mt-2 px-6 py-3 rounded-xl font-bold font-mono tracking-widest text-sm inline-block"
             style={{ background: 'linear-gradient(135deg,#818cf8,#6366f1)', color: '#fff', boxShadow: '0 0 20px rgba(129,140,248,0.3)' }}>
             SIGN IN
           </Link>
@@ -300,7 +390,6 @@ export default function MultiplayerCricket() {
   // ── Render Lobby ───────────────────────────────────────────────────────────
 
   if (!match || match.game_state?.phase === 'lobby') {
-    // Waiting for guest (host just created room)
     if (match && match.status === 'waiting') {
       return (
         <div className="min-h-[100dvh] bg-[#06060f] flex flex-col items-center">
@@ -309,7 +398,6 @@ export default function MultiplayerCricket() {
             <div className="w-full bg-[#0c0c1e] p-6 rounded-2xl border border-[#1e1e3a]" style={{ borderTop: '2px solid #818cf8' }}>
               <h2 className="font-bold tracking-widest text-[#818cf8] mb-1 text-lg" style={{ fontFamily: "'Orbitron', sans-serif" }}>ROOM CREATED</h2>
               <p className="text-[10px] font-mono text-[#6b6b9a] uppercase tracking-widest mb-5">Share this code with your opponent</p>
-
               <div className="flex items-center gap-2 mb-5">
                 <div className="flex-1 bg-[#06060f] border border-[#818cf880] rounded-xl px-5 py-4 font-mono font-bold text-3xl text-center tracking-[0.3em] text-[#818cf8]"
                   style={{ textShadow: '0 0 15px rgba(129,140,248,0.5)' }}>
@@ -320,7 +408,6 @@ export default function MultiplayerCricket() {
                   {copied ? <Check size={20} className="text-[#00ff88]" /> : <Copy size={20} />}
                 </button>
               </div>
-
               <div className="flex items-center gap-2 justify-center">
                 <div className="w-2 h-2 rounded-full bg-[#ffd700] animate-pulse" />
                 <span className="text-[11px] font-mono text-[#6b6b9a] animate-pulse">Waiting for opponent…</span>
@@ -334,7 +421,6 @@ export default function MultiplayerCricket() {
       );
     }
 
-    // Lobby menu
     return (
       <div className="min-h-[100dvh] bg-[#06060f] flex flex-col items-center">
         <MpHeader onBack={() => nav('/')} />
@@ -342,7 +428,6 @@ export default function MultiplayerCricket() {
           <p className="font-mono text-[10px] uppercase tracking-widest text-[#6b6b9a]">
             Logged in as <span className="text-[#818cf8]">{user.username}</span>
           </p>
-
           <AnimatePresence mode="wait">
             {lobbyMode === 'menu' && (
               <motion.div key="menu" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
@@ -368,34 +453,14 @@ export default function MultiplayerCricket() {
                 <div className="flex gap-3">
                   <div className="flex-1 flex flex-col gap-1.5">
                     <label className="text-[10px] font-mono text-[#6b6b9a] uppercase tracking-widest">Overs (1–20)</label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={20}
-                        value={config.totalOvers === 1 ? "" : config.totalOvers}
-                        placeholder="1"
-                        onChange={e =>
-                          setConfig(c => ({
-                            ...c,
-                            totalOvers: Math.max(1, Math.min(20, Number(e.target.value || 1)))
-                          }))
-                        }
-                               className="bg-[#06060f] border border-[#1e1e3a] h-11 rounded-xl px-4 font-mono text-[#e2e2f2] outline-none focus:border-[#818cf8] transition-all" />
+                    <input type="number" min={1} max={20} value={config.totalOvers === 1 ? "" : config.totalOvers} placeholder="1"
+                      onChange={e => setConfig(c => ({ ...c, totalOvers: Math.max(1, Math.min(20, Number(e.target.value || 1))) }))}
+                      className="bg-[#06060f] border border-[#1e1e3a] h-11 rounded-xl px-4 font-mono text-[#e2e2f2] outline-none focus:border-[#818cf8] transition-all" />
                   </div>
                   <div className="flex-1 flex flex-col gap-1.5">
                     <label className="text-[10px] font-mono text-[#6b6b9a] uppercase tracking-widest">Wickets (1–10)</label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={10}
-                        value={config.totalWickets === 1 ? "" : config.totalWickets}
-                        placeholder="1"
-                        onChange={e =>
-                          setConfig(c => ({
-                            ...c,
-                            totalWickets: Math.max(1, Math.min(10, Number(e.target.value || 1)))
-                          }))
-                        }
+                    <input type="number" min={1} max={10} value={config.totalWickets === 1 ? "" : config.totalWickets} placeholder="1"
+                      onChange={e => setConfig(c => ({ ...c, totalWickets: Math.max(1, Math.min(10, Number(e.target.value || 1))) }))}
                       className="bg-[#06060f] border border-[#1e1e3a] h-11 rounded-xl px-4 font-mono text-[#e2e2f2] outline-none focus:border-[#818cf8] transition-all" />
                   </div>
                 </div>
@@ -439,7 +504,58 @@ export default function MultiplayerCricket() {
     );
   }
 
-  // ── Render Toss ────────────────────────────────────────────────────────────
+  // ── Render Toss Call (H/T pick) ────────────────────────────────────────────
+
+  if (gs?.phase === 'toss_call') {
+    const amCaller = gs.tossCaller === (isHost ? 'host' : 'guest');
+    const callerName = gs.tossCaller === 'host' ? match.host_username : match.guest_username;
+    const opponentName = isHost ? match.guest_username : match.host_username;
+
+    return (
+      <div className="min-h-[100dvh] bg-[#06060f] flex flex-col items-center">
+        <MpHeader onBack={resetMatch} code={match.room_code} />
+        <div className="flex flex-col gap-8 w-full max-w-md p-4 flex-1 items-center justify-center">
+          <div className="text-center">
+            <div className="text-6xl mb-3">🪙</div>
+            <h2 className="text-2xl font-black tracking-widest mb-2"
+              style={{ fontFamily: "'Orbitron', sans-serif", color: '#ffd700', textShadow: '0 0 15px rgba(255,215,0,0.4)' }}>
+              COIN TOSS
+            </h2>
+            <p className="font-mono text-sm text-[#6b6b9a]">
+              {amCaller ? 'You call it!' : `${callerName ?? opponentName} is calling…`}
+            </p>
+          </div>
+
+          {amCaller ? (
+            <div className="w-full flex flex-col gap-3">
+              <p className="font-mono text-[10px] uppercase tracking-widest text-center text-[#6b6b9a]">Your call</p>
+              <div className="flex gap-3">
+                <button onClick={() => handleTossCall('heads')}
+                  className="flex-1 h-28 rounded-xl font-bold text-xl tracking-widest border-2 border-[#ffd700] text-[#ffd700] transition-all hover:shadow-[0_0_25px_rgba(255,215,0,0.3)] hover:bg-[rgba(255,215,0,0.08)]"
+                  style={{ fontFamily: "'Orbitron', sans-serif" }}>
+                  HEADS
+                </button>
+                <button onClick={() => handleTossCall('tails')}
+                  className="flex-1 h-28 rounded-xl font-bold text-xl tracking-widest border-2 border-[#818cf8] text-[#818cf8] transition-all hover:shadow-[0_0_25px_rgba(129,140,248,0.3)] hover:bg-[rgba(129,140,248,0.08)]"
+                  style={{ fontFamily: "'Orbitron', sans-serif" }}>
+                  TAILS
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-2 h-2 rounded-full bg-[#ffd700] animate-pulse" />
+              <span className="text-[12px] font-mono text-[#6b6b9a] animate-pulse">
+                Waiting for {callerName ?? opponentName} to call…
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Render Toss Result + Bat/Bowl Choice ───────────────────────────────────
 
   if (gs?.phase === 'toss') {
     const iWonToss = gs.tossWinner === (isHost ? 'host' : 'guest');
@@ -453,8 +569,9 @@ export default function MultiplayerCricket() {
             <div className="text-6xl mb-4" style={{ filter: `drop-shadow(0 0 20px ${iWonToss ? '#ffd700' : '#818cf8'})` }}>
               {gs.tossResult === 'heads' ? '🟡' : '⚫'}
             </div>
-            <h2 className="text-2xl font-black tracking-widest mb-2" style={{ fontFamily: "'Orbitron', sans-serif", color: '#ffd700', textShadow: '0 0 15px rgba(255,215,0,0.5)' }}>
-              {gs.tossResult.toUpperCase()}
+            <h2 className="text-2xl font-black tracking-widest mb-2"
+              style={{ fontFamily: "'Orbitron', sans-serif", color: '#ffd700', textShadow: '0 0 15px rgba(255,215,0,0.5)' }}>
+              {gs.tossResult.toUpperCase()}!
             </h2>
             <p className="font-mono text-sm text-[#6b6b9a]">
               {iWonToss ? 'You won the toss!' : `${opponentName} won the toss!`}
@@ -498,7 +615,10 @@ export default function MultiplayerCricket() {
       <div className="min-h-[100dvh] bg-[#06060f] flex flex-col items-center">
         <MpHeader onBack={resetMatch} code={match.room_code} />
         <div className="flex flex-col gap-6 w-full max-w-md p-4 flex-1 items-center justify-center">
-          <h2 className="text-2xl font-black tracking-widest text-[#818cf8]" style={{ fontFamily: "'Orbitron', sans-serif", textShadow: '0 0 10px rgba(129,140,248,0.5)' }}>INNINGS BREAK</h2>
+          <h2 className="text-2xl font-black tracking-widest text-[#818cf8]"
+            style={{ fontFamily: "'Orbitron', sans-serif", textShadow: '0 0 10px rgba(129,140,248,0.5)' }}>
+            INNINGS BREAK
+          </h2>
           <div className="bg-[#0c0c1e] w-full p-8 rounded-3xl border border-[#1e1e3a] text-center flex flex-col gap-3">
             <p className="font-mono text-[10px] text-[#6b6b9a] uppercase tracking-widest">{inn1BatterName}'s score</p>
             <div className="text-7xl font-bold font-mono text-[#e2e2f2]">
@@ -529,7 +649,7 @@ export default function MultiplayerCricket() {
 
   if (gs?.phase === 'result') {
     const myRole: 'host' | 'guest' = isHost ? 'host' : 'guest';
-    const iWon = gs.resultMsg.toLowerCase().includes(myRole);
+    const iWon  = (isHost && gs.resultMsg.includes('HOST')) || (!isHost && gs.resultMsg.includes('GUEST'));
     const isTied = gs.resultMsg.includes('TIED');
 
     return (
@@ -549,7 +669,6 @@ export default function MultiplayerCricket() {
               <div className="text-[#00ff88]">{match.host_username}</div>
               <div className="text-[#6b6b9a]">VS</div>
               <div className="text-[#818cf8]">{match.guest_username}</div>
-
               <div className="text-[#e2e2f2] text-lg font-bold">{gs.innings1Batter === 'host' ? gs.innings1Score : gs.score}</div>
               <div className="text-[#6b6b9a] text-xs">Scores</div>
               <div className="text-[#e2e2f2] text-lg font-bold">{gs.innings1Batter === 'guest' ? gs.innings1Score : gs.score}</div>
@@ -560,6 +679,10 @@ export default function MultiplayerCricket() {
             <StatCell label="Target" value={gs.target ?? '—'} />
             <StatCell label="Inn2 Balls" value={gs.ballsBowled} />
           </div>
+          <p className="font-mono text-[9px] text-center uppercase tracking-widest"
+            style={{ color: statsSaved ? '#00ff8880' : '#3a3a5c' }}>
+            {statsSaved ? '✓ Stats saved' : 'Saving stats…'}
+          </p>
           <button onClick={resetMatch}
             className="w-full h-14 font-bold text-lg rounded-xl tracking-widest transition-all mt-2"
             style={{ fontFamily: "'Orbitron', sans-serif", background: '#00ff88', color: '#06060f', boxShadow: '0 0 20px rgba(0,255,136,0.3)' }}>
@@ -581,7 +704,6 @@ export default function MultiplayerCricket() {
     return (
       <div className="min-h-[100dvh] bg-[#06060f] flex flex-col items-center">
         <MpHeader onBack={resetMatch} code={match.room_code} />
-
         <div className="flex flex-col w-full max-w-md p-4 flex-1 gap-4">
           {/* Status bar */}
           <div className="flex justify-between items-center text-[10px] font-mono uppercase tracking-widest text-[#6b6b9a] bg-[#0c0c1e] px-4 py-3 rounded-xl border border-[#1e1e3a]">
@@ -658,7 +780,7 @@ export default function MultiplayerCricket() {
     );
   }
 
-  // Fallback (joining / syncing)
+  // Fallback
   return (
     <div className="min-h-[100dvh] bg-[#06060f] flex items-center justify-center">
       <span className="font-mono text-[#6b6b9a] animate-pulse text-sm">Connecting…</span>
@@ -672,12 +794,11 @@ function MpHeader({ onBack, code }: { onBack: () => void; code?: string }) {
       <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-[#1c1c38] text-[#6b6b9a] hover:text-[#00ff88] transition-colors">
         <ArrowLeft size={24} />
       </button>
-      <h1 className="text-lg font-bold tracking-widest text-[#818cf8] flex-1" style={{ fontFamily: "'Orbitron', sans-serif", textShadow: '0 0 10px rgba(129,140,248,0.5)' }}>
+      <h1 className="text-lg font-bold tracking-widest text-[#818cf8] flex-1"
+        style={{ fontFamily: "'Orbitron', sans-serif", textShadow: '0 0 10px rgba(129,140,248,0.5)' }}>
         ⚔ MULTIPLAYER
       </h1>
-      {code && (
-        <span className="font-mono text-[10px] tracking-widest text-[#4a4a70]">{code}</span>
-      )}
+      {code && <span className="font-mono text-[10px] tracking-widest text-[#4a4a70]">{code}</span>}
     </header>
   );
 }

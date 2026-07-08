@@ -12,7 +12,7 @@ import {
   newExpertState, ExpertState, ExpertCtx
 } from '@/lib/cricketAI';
 
-import { loadPlayer, upsertPlayerStats, logBall, getUserBallHistory, PlayerStats } from '@/lib/supabase';
+import { upsertPlayerStats, logBall, getUserBallHistory } from '@/lib/supabase';
 import { useAuth } from '@/lib/authContext';
 
 // --- Types & Initial State ---
@@ -58,8 +58,8 @@ interface GameState {
   historicalBatSeq: number[];
   historicalBowlSeq: number[];
   stats: {
-    player: { runs: number; balls: number; outs: number; balls_bowled: number; runs_conceded: number; catches: number; runouts: number; stumpings: number; bowled: number };
-    CricBot: { runs: number; balls: number; outs: number; balls_bowled: number; runs_conceded: number; catches: number; runouts: number; stumpings: number; bowled: number };
+    player: { runs: number; balls: number; outs: number; balls_bowled: number; runs_conceded: number; catches: number; runouts: number; stumpings: number; bowled: number; catches_dropped: number; runouts_missed: number; stumpings_missed: number };
+    CricBot: { runs: number; balls: number; outs: number; balls_bowled: number; runs_conceded: number; catches: number; runouts: number; stumpings: number; bowled: number; catches_dropped: number; runouts_missed: number; stumpings_missed: number };
   };
 }
 
@@ -97,8 +97,8 @@ const getInitialState = (): GameState => ({
   historicalBatSeq: [],
   historicalBowlSeq: [],
   stats: {
-    player: { runs: 0, balls: 0, outs: 0, balls_bowled: 0, runs_conceded: 0, catches: 0, runouts: 0, stumpings: 0, bowled: 0 },
-    CricBot: { runs: 0, balls: 0, outs: 0, balls_bowled: 0, runs_conceded: 0, catches: 0, runouts: 0, stumpings: 0, bowled: 0 },
+    player: { runs: 0, balls: 0, outs: 0, balls_bowled: 0, runs_conceded: 0, catches: 0, runouts: 0, stumpings: 0, bowled: 0, catches_dropped: 0, runouts_missed: 0, stumpings_missed: 0 },
+    CricBot: { runs: 0, balls: 0, outs: 0, balls_bowled: 0, runs_conceded: 0, catches: 0, runouts: 0, stumpings: 0, bowled: 0, catches_dropped: 0, runouts_missed: 0, stumpings_missed: 0 },
   }
 });
 
@@ -175,6 +175,8 @@ function checkInningsOver(st: GameState, userId?: string) {
         const pStats = st.stats.player;
         const won = st.resultMsg === 'You Won!';
         const tied = st.resultMsg === 'Match Tied!';
+        // Team score = runs scored in the innings where player batted
+        const playerTeamScore = st.firstBatter === 'player' ? st.innings1Score : st.score;
         upsertPlayerStats(st.playerName, userId, won, tied, {
           runs: pStats.runs,
           balls: pStats.balls,
@@ -184,7 +186,11 @@ function checkInningsOver(st: GameState, userId?: string) {
           catches: pStats.catches,
           runouts: pStats.runouts,
           stumpings: pStats.stumpings,
-          bowled: pStats.bowled
+          bowled: pStats.bowled,
+          catches_dropped: pStats.catches_dropped,
+          runouts_missed: pStats.runouts_missed,
+          stumpings_missed: pStats.stumpings_missed,
+          team_score: playerTeamScore,
         }, st.stats.CricBot.outs);
       }
     }
@@ -196,19 +202,7 @@ function checkInningsOver(st: GameState, userId?: string) {
 export default function HandCricket() {
   const { user } = useAuth();
   const [state, setState] = useState<GameState>(getInitialState());
-  const [playerStats, setPlayerStats] = useState<PlayerStats | null>(null);
   const [nameError, setNameError] = useState('');
-  const [statsLoading, setStatsLoading] = useState(false);
-
-  // Load career stats when user is available
-  useEffect(() => {
-    if (!user) { setPlayerStats(null); return; }
-    setStatsLoading(true);
-    loadPlayer(user.username).then(p => {
-      setPlayerStats(p);
-      setStatsLoading(false);
-    });
-  }, [user?.username]);
 
   const handleStartMatch = async () => {
     if (!user) {
@@ -410,6 +404,11 @@ export default function HandCricket() {
       } else {
         st.lastEvent = 'survived';
         st.lastMsg = `Survived! Pick: ${pick} vs Bot: ${cricBotPick}`;
+        // Track fielding misses for the bowling side
+        const fielder = pd.bowler as 'player' | 'CricBot';
+        if (pd.type === 'catch_chance') st.stats[fielder].catches_dropped++;
+        else if (pd.type === 'runout_chance') st.stats[fielder].runouts_missed++;
+        else if (pd.type === 'stump_chance') st.stats[fielder].stumpings_missed++;
       }
       
       st.pendingDismissal = null;
@@ -439,7 +438,7 @@ export default function HandCricket() {
               <span className="font-mono text-[#00ff88] font-bold">{user.username}</span>
             </div>
             <span className="text-[9px] font-mono text-[#6b6b9a] uppercase tracking-widest">
-              {statsLoading ? 'Loading…' : playerStats ? '✓ Profile loaded' : 'New player'}
+              ✓ Ready
             </span>
           </div>
         ) : (
@@ -517,73 +516,24 @@ export default function HandCricket() {
         >START MATCH</button>
       </div>
 
-      {/* Career Stats Card — shown when profile loaded */}
-      {(playerStats || statsLoading) && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="w-full bg-[#0c0c1e] rounded-2xl border border-[#1e1e3a] overflow-hidden"
-          style={{ borderTop: '2px solid #818cf8' }}
-        >
-          <div className="flex items-center justify-between px-5 pt-4 pb-2">
-            <h3 className="text-[11px] font-bold tracking-widest text-[#818cf8] uppercase" style={{ fontFamily: "'Orbitron', sans-serif" }}>
-              Career Stats
-            </h3>
-            {playerStats && (
-              <span className="text-[9px] font-mono text-[#6b6b9a]">{playerStats.username}</span>
-            )}
-          </div>
-
-          {statsLoading ? (
-            <div className="px-5 pb-5 flex items-center justify-center h-20">
-              <span className="text-[11px] font-mono text-[#6b6b9a] animate-pulse">Loading profile…</span>
+      {/* Career Stats link */}
+      {user && (
+        <Link href="/stats">
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.98 }}
+            className="w-full bg-[#0c0c1e] border border-[#1e1e3a] rounded-xl px-5 py-4 flex items-center justify-between cursor-pointer group"
+            style={{ borderTop: '2px solid #818cf8' }}
+          >
+            <div>
+              <p className="font-mono text-[11px] uppercase tracking-widest text-[#818cf8] font-bold">📊 Career Stats</p>
+              <p className="font-mono text-[9px] text-[#4a4a70] mt-0.5">View full records, milestones & head-to-head</p>
             </div>
-          ) : playerStats ? (
-            <div className="px-4 pb-5 flex flex-col gap-3">
-              {/* Match record */}
-              <div className="grid grid-cols-4 gap-2">
-                <StatCell label="Matches" value={<span className="text-[#e2e2f2]">{playerStats.matches}</span>} />
-                <StatCell label="Wins" value={<span className="text-[#00ff88]">{playerStats.wins}</span>} />
-                <StatCell label="Losses" value={<span className="text-[#ff3366]">{playerStats.losses}</span>} />
-                <StatCell label="Ties" value={<span className="text-[#ffd700]">{playerStats.ties}</span>} />
-              </div>
-
-              {/* Batting */}
-              <div>
-                <p className="text-[9px] font-mono text-[#6b6b9a] uppercase tracking-widest mb-1.5 pl-1">Batting</p>
-                <div className="grid grid-cols-4 gap-2">
-                  <StatCell label="Runs" value={playerStats.bat_runs} />
-                  <StatCell label="Avg" value={fmtAvg(playerStats.bat_runs, playerStats.bat_outs)} />
-                  <StatCell label="SR" value={fmtSR(playerStats.bat_runs, playerStats.bat_balls)} />
-                  <StatCell label="HS" value={<span className="text-[#ffd700]">{playerStats.bat_hs || '—'}</span>} />
-                </div>
-              </div>
-
-              {/* Bowling */}
-              <div>
-                <p className="text-[9px] font-mono text-[#6b6b9a] uppercase tracking-widest mb-1.5 pl-1">Bowling</p>
-                <div className="grid grid-cols-4 gap-2">
-                  <StatCell label="Wkts" value={<span className="text-[#818cf8]">{playerStats.bowl_wkts}</span>} />
-                  <StatCell label="Runs" value={playerStats.bowl_runs} />
-                  <StatCell label="Eco" value={fmtEco(playerStats.bowl_runs, playerStats.bowl_balls)} />
-                  <StatCell label="Avg" value={playerStats.bowl_wkts ? (playerStats.bowl_runs / playerStats.bowl_wkts).toFixed(1) : '—'} />
-                </div>
-              </div>
-
-              {/* Fielding */}
-              {(playerStats.catches + playerStats.runouts + playerStats.stumpings) > 0 && (
-                <div>
-                  <p className="text-[9px] font-mono text-[#6b6b9a] uppercase tracking-widest mb-1.5 pl-1">Fielding</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <StatCell label="Catches" value={playerStats.catches} />
-                    <StatCell label="Run Outs" value={playerStats.runouts} />
-                    <StatCell label="Stumpings" value={playerStats.stumpings} />
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : null}
-        </motion.div>
+            <span className="font-mono text-[#818cf8] opacity-50 group-hover:opacity-100 transition-opacity">→</span>
+          </motion.div>
+        </Link>
       )}
     </div>
   );
