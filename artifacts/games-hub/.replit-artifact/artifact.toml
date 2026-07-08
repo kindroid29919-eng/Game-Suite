@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "AhaD's Games Hub"
+version = "1.0.0"
+id = "artifacts/games-hub"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21302
+
+[services.development]
+run = "pnpm --filter @workspace/games-hub run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/games-hub", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/games-hub/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21302"
+BASE_PATH = "/"

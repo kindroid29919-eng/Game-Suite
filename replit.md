@@ -1,6 +1,6 @@
-# [Project name]
+# AhaD's Games Hub
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A personal arcade with 3 browser games: Rock Paper Scissors, Guess the Number, and Hand Cricket — built in React + Vite, deployable to Vercel (frontend) and Render (Python backend).
 
 ## Run & Operate
 
@@ -22,19 +22,33 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/games-hub/src/` — React frontend (Vite, wouter, Tailwind dark theme)
+- `artifacts/games-hub/src/pages/` — Home, RockPaperScissors, GuessTheNumber, HandCricket
+- `artifacts/games-hub/src/lib/cricketAI.ts` — Full Hand Cricket AI engine (Classic + Expert modes)
+- `artifacts/games-hub/src/lib/supabase.ts` — Supabase client + career stats helpers
+- `artifacts/games-hub/src/components/` — Keypad, Banner, StatCell shared components
+- `backend/` — Python FastAPI backend (for Render deployment, optional)
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Supabase anon key used directly in the React frontend (it's the public key, designed for browser use)
+- Hand Cricket AI runs fully in the browser (TypeScript port) — zero network latency per ball
+- Python backend in `backend/` is optional; the React app works standalone with direct Supabase calls
+- Dark mode is always on (class="dark" on html element), no light mode toggle needed
+- Vite BASE_PATH prefix handled via wouter router base; all routes are path-prefixed correctly
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- **Home**: Hub with cards for all 3 games
+- **Rock Paper Scissors**: Battle arena vs computer, session score tracking
+- **Guess the Number**: 1-100 guessing game with Too High/Too Low hints
+- **Hand Cricket**: Full T20 match vs CricBot — toss, bat/bowl, 0-6 keypad input, career stats saved to Supabase, Classic + Expert AI modes
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Always dark mode; use Space Grotesk + Space Mono + Orbitron fonts
+- Mobile-first layout (max 480px content, everything fits without scrolling during cricket gameplay)
+- Supabase tables: `hc_players` (career stats) and `hc_balls` (ball log for Expert AI)
 
 ## Gotchas
 
