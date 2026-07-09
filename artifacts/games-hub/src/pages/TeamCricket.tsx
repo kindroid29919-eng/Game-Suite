@@ -211,8 +211,8 @@ function LobbyView({ match, gs, isHost, myUserId, onUpdate, onStart }: {
         <p className="font-mono text-[10px] text-[#6b6b9a] uppercase tracking-widest">Match Settings</p>
         <div className="flex gap-3">
           <Stepper label="Overs" value={localGs.totalOvers} min={1} max={50} color="#00ff88" onChange={v => save({ ...localGs, totalOvers: v })} />
-          <Stepper label="Wickets" value={localGs.totalWickets} min={1} max={10} color="#818cf8" onChange={v => save({ ...localGs, totalWickets: v })} />
         </div>
+        <p className="font-mono text-[9px] text-[#4a4a70]">Wickets = players per team − 1 (all out). Set automatically when the match starts.</p>
       </div>
 
       {/* Teams */}
@@ -322,6 +322,42 @@ function BattingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: Team
   const available = gs.teamPlayers[bTeam].filter(uid => inn.batting[uid]?.didNotBat);
   if (!iAmCaptain) return <WaitBanner msg={`${gs.teamNames[bTeam]} captain picking next batter…`} />;
   if (submitted) return <WaitBanner msg="Batter pick submitted, waiting…" />;
+  return (
+    <div className="flex flex-col gap-4 p-4 w-full max-w-md mx-auto">
+      <p className="font-mono text-[11px] text-[#6b6b9a] uppercase tracking-widest text-center">Pick Next Batter</p>
+      {available.length === 0 ? <p className="font-mono text-center text-[#ff3366]">No batters remaining — innings over!</p> : available.map(uid => (
+        <GlowBtn key={uid} onClick={() => onSubmit(uid)} color={TEAM_COLOR[bTeam]} className="w-full text-base">
+          {gs.players[uid]?.username}
+        </GlowBtn>
+      ))}
+    </div>
+  );
+}
+
+function BowlingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: TeamGameState; inn: InningsData; myUserId: string; onSubmit: (v: { bowlerUserId: string; fielders: FielderAssignment }) => void; submitted: boolean }) {
+  const bwlTeam: 'A' | 'B' = inn.battingTeam === 'A' ? 'B' : 'A';
+  const iAmCaptain = gs.captains[bwlTeam] === myUserId;
+  const teamUids = gs.teamPlayers[bwlTeam];
+
+  const [bowlerUid, setBowlerUid] = useState('');
+  const [catches, setCatches] = useState<string[]>([]);
+  const [runouts, setRunouts] = useState<string[]>([]);
+  const [stump, setStump] = useState<string | null>(null);
+
+  const nonBowlers = bowlerUid ? teamUids.filter(uid => uid !== bowlerUid) : [];
+  const role = (uid: string) => catches.includes(uid) ? 'C' : runouts.includes(uid) ? 'R' : stump === uid ? 'S' : '—';
+  const setRole = (uid: string, r: 'C' | 'R' | 'S' | '—') => {
+    setCatches(c => c.filter(x => x !== uid));
+    setRunouts(c => c.filter(x => x !== uid));
+    if (stump === uid) setStump(null);
+    if (r === 'C' && catches.length < 3) setCatches(c => [...c, uid]);
+    else if (r === 'R' && runouts.length < 2) setRunouts(c => [...c, uid]);
+    else if (r === 'S' && !stump) setStump(uid);
+  };
+
+  if (!iAmCaptain) return <WaitBanner msg={`${gs.teamNames[bwlTeam]} captain setting fielders…`} />;
+  if (submitted) return <WaitBanner msg="Setup submitted, waiting for host…" />;
+
   return (
     <div className="flex flex-col gap-4 p-4 w-full max-w-md mx-auto">
       <p className="font-mono text-[11px] text-[#6b6b9a] uppercase tracking-widest text-center">Pick Next Batter</p>
@@ -573,7 +609,6 @@ function ScoreboardView({ gs }: { gs: TeamGameState }) {
 export default function TeamCricket() {
   const { user } = useAuth();
   const [createOvers, setCreateOvers] = useState(10);
-  const [createWkts, setCreateWkts] = useState(5);
   const [showCreate, setShowCreate] = useState(false);
   const [match, setMatch] = useState<TeamMatch | null>(null);
   const [mySubmitted, setMySubmitted] = useState(false);
@@ -649,11 +684,11 @@ export default function TeamCricket() {
             <p className="font-mono text-[11px] text-[#6b6b9a] uppercase tracking-widest text-center">Match Settings</p>
             <div className="flex gap-3">
               <Stepper label="Overs" value={createOvers} min={1} max={50} color="#00ff88" onChange={setCreateOvers} />
-              <Stepper label="Wickets" value={createWkts} min={1} max={10} color="#818cf8" onChange={setCreateWkts} />
             </div>
             <GlowBtn color="#00ff88" className="w-full text-base" onClick={async () => {
-              const m = await createTeamMatch(user.id, user.username, createOvers, createWkts);
-              if (m) setMatch(m);
+              const m = await createTeamMatch(user.id, user.username, createOvers, 1);
+              if (m) { setMatch(m); return; }
+              alert('Could not create match — check console for details.');
             }}>Create Match</GlowBtn>
             <button onClick={() => setShowCreate(false)} className="font-mono text-[11px] text-[#4a4a70] hover:text-[#6b6b9a] text-center">Cancel</button>
           </div>
@@ -686,7 +721,11 @@ export default function TeamCricket() {
         {gs.phase === 'lobby' && (
           <LobbyView match={match} gs={gs} isHost={isHost} myUserId={myUserId}
             onUpdate={async (newGs) => { await updateTeamMatchState(match.id, newGs); await refresh(); }}
-            onStart={async () => { await updateTeamMatchState(match.id, { ...gs, phase: 'toss_call' }, true); await refresh(); }} />
+            onStart={async () => {
+              const teamSize = Math.min(gs.teamPlayers.A.length, gs.teamPlayers.B.length);
+              await updateTeamMatchState(match.id, { ...gs, totalWickets: teamSize - 1, phase: 'toss_call' }, true);
+              await refresh();
+            }} />
         )}
         {gs.phase === 'toss_call' && <TossCallView gs={gs} myUserId={myUserId} onSubmit={(c) => submitAction('toss_call', c)} />}
         {gs.phase === 'toss' && <TossView gs={gs} myUserId={myUserId} onSubmit={(c) => submitAction('bat_bowl', c)} />}
@@ -726,7 +765,7 @@ async function processMatchActions(match: TeamMatch): Promise<void> {
   switch (gs.phase) {
     case 'toss_call': {
       const cid = gs.captains[gs.tossCaller];
-       if (!cid || actions[cid]?.type !== 'toss_call') return;
+      if (!cid || actions[cid]?.type !== 'toss_call') return;
       const call = actions[cid].value as 'heads' | 'tails';
       const result: 'heads' | 'tails' = Math.random() < 0.5 ? 'heads' : 'tails';
       const winner: 'A' | 'B' = call === result ? gs.tossCaller : gs.tossCaller === 'A' ? 'B' : 'A';
