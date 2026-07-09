@@ -402,13 +402,21 @@ export default function HandCricket() {
       if (pick === cricBotPick) {
         markOut(st, pd.batterNum, pd.bowlerNum, pd.type);
       } else {
-        st.lastEvent = 'survived';
-        st.lastMsg = `Survived! Pick: ${pick} vs Bot: ${cricBotPick}`;
-        // Track fielding misses for the bowling side
-        const fielder = pd.bowler as 'player' | 'CricBot';
-        if (pd.type === 'catch_chance') st.stats[fielder].catches_dropped++;
-        else if (pd.type === 'runout_chance') st.stats[fielder].runouts_missed++;
-        else if (pd.type === 'stump_chance') st.stats[fielder].stumpings_missed++;
+        // Dismissal missed — credit the runs from this ball
+        const batter = pd.batter as 'player' | 'CricBot';
+        const bowler = pd.bowler as 'player' | 'CricBot';
+        st.score += pd.batterNum;
+        st.stats[batter].runs += pd.batterNum;
+        st.stats[bowler].runs_conceded += pd.batterNum;
+        // Pick a sensible lastEvent so the banner reflects the actual runs
+        if (pd.batterNum === 6) st.lastEvent = 'six';
+        else if (pd.batterNum === 0) st.lastEvent = 'dot';
+        else st.lastEvent = 'runs';
+        st.lastMsg = `Survived! +${pd.batterNum} runs · (${pick} vs Bot: ${cricBotPick})`;
+        // Track fielding misses for the bowling/fielding side
+        if (pd.type === 'catch_chance') st.stats[bowler].catches_dropped++;
+        else if (pd.type === 'runout_chance') st.stats[bowler].runouts_missed++;
+        else if (pd.type === 'stump_chance') st.stats[bowler].stumpings_missed++;
       }
       
       st.pendingDismissal = null;
