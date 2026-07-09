@@ -360,42 +360,6 @@ function BowlingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: Team
 
   return (
     <div className="flex flex-col gap-4 p-4 w-full max-w-md mx-auto">
-      <p className="font-mono text-[11px] text-[#6b6b9a] uppercase tracking-widest text-center">Pick Next Batter</p>
-      {available.length === 0 ? <p className="font-mono text-center text-[#ff3366]">No batters remaining — innings over!</p> : available.map(uid => (
-        <GlowBtn key={uid} onClick={() => onSubmit(uid)} color={TEAM_COLOR[bTeam]} className="w-full text-base">
-          {gs.players[uid]?.username}
-        </GlowBtn>
-      ))}
-    </div>
-  );
-}
-
-function BowlingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: TeamGameState; inn: InningsData; myUserId: string; onSubmit: (v: { bowlerUserId: string; fielders: FielderAssignment }) => void; submitted: boolean }) {
-  const bwlTeam: 'A' | 'B' = inn.battingTeam === 'A' ? 'B' : 'A';
-  const iAmCaptain = gs.captains[bwlTeam] === myUserId;
-  const teamUids = gs.teamPlayers[bwlTeam];
-
-  const [bowlerUid, setBowlerUid] = useState('');
-  const [catches, setCatches] = useState<string[]>([]);
-  const [runouts, setRunouts] = useState<string[]>([]);
-  const [stump, setStump] = useState<string | null>(null);
-
-  const nonBowlers = bowlerUid ? teamUids.filter(uid => uid !== bowlerUid) : [];
-  const role = (uid: string) => catches.includes(uid) ? 'C' : runouts.includes(uid) ? 'R' : stump === uid ? 'S' : '—';
-  const setRole = (uid: string, r: 'C' | 'R' | 'S' | '—') => {
-    setCatches(c => c.filter(x => x !== uid));
-    setRunouts(c => c.filter(x => x !== uid));
-    if (stump === uid) setStump(null);
-    if (r === 'C' && catches.length < 3) setCatches(c => [...c, uid]);
-    else if (r === 'R' && runouts.length < 2) setRunouts(c => [...c, uid]);
-    else if (r === 'S' && !stump) setStump(uid);
-  };
-
-  if (!iAmCaptain) return <WaitBanner msg={`${gs.teamNames[bwlTeam]} captain setting fielders…`} />;
-  if (submitted) return <WaitBanner msg="Setup submitted, waiting for host…" />;
-
-  return (
-    <div className="flex flex-col gap-4 p-4 w-full max-w-md mx-auto">
       <p className="font-mono text-[11px] text-[#6b6b9a] uppercase tracking-widest text-center">Bowling Setup</p>
       {/* Pick bowler */}
       <div className="flex flex-col gap-2">
