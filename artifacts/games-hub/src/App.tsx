@@ -22,6 +22,7 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/cricket" component={HandCricket} />
       <Route path="/multiplayer" component={MultiplayerCricket} />
+      <Route path="/team" component={TeamCricket} />
       <Route path="/stats" component={Stats} />
       <Route path="/side-games" component={SideGames} />
       <Route path="/rps" component={RockPaperScissors} />

@@ -99,6 +99,15 @@ export default function Home() {
               delay: 0.25,
             },
             {
+              href: '/team',
+              label: 'Team Mode',
+              sub: '11-a-side, pick your XI',
+              accent: '#ffd700',
+              glow: 'rgba(255,215,0,0.3)',
+              bg: 'rgba(255,215,0,0.07)',
+              delay: 0.3,
+            },
+            {
               href: '/stats',
               label: 'Stats',
               sub: 'Career records & head-to-head',
