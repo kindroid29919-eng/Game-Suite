@@ -482,7 +482,7 @@ export default function HandCricket() {
         {/* Overs & Wickets — stepper buttons, no keyboard input */}
         <div className="flex gap-3">
           {([
-            { label: 'Overs', key: 'totalOvers' as const, min: 1, max: 20, color: '#00ff88' },
+            { label: 'Overs', key: 'totalOvers' as const, min: 1, max: 50, color: '#00ff88' },
             { label: 'Wickets', key: 'totalWickets' as const, min: 1, max: 10, color: '#818cf8' },
           ] as const).map(({ label, key, min, max, color }) => {
             const val = state[key];

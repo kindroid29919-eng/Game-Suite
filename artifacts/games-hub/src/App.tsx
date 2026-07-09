@@ -8,6 +8,7 @@ import RockPaperScissors from '@/pages/RockPaperScissors';
 import GuessTheNumber from '@/pages/GuessTheNumber';
 import HandCricket from '@/pages/HandCricket';
 import MultiplayerCricket from '@/pages/MultiplayerCricket';
+import TeamCricket from '@/pages/TeamCricket';
 import Login from '@/pages/Login';
 import Stats from '@/pages/Stats';
 import SideGames from '@/pages/SideGames';
