@@ -1,391 +1,520 @@
-import { supabase } from './supabase';
-import type { RealtimeChannel } from '@supabase/supabase-js';
-import { upsertMpStats } from './supabase';
+/**
+ * Hand Cricket AI Engine — TypeScript port from Python
+ * Classic mode: pattern-based AI
+ * Expert mode: multi-model ensemble with adaptive weights
+ */
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+type NumMap = Record<number, number>;
 
-export type TeamPhase =
-  | 'lobby'
-  | 'toss_call'
-  | 'toss'
-  | 'batting_setup'
-  | 'bowling_setup'
-  | 'pick'
-  | 'dismissal'
-  | 'innings_break'
-  | 'result';
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-export interface BatRecord {
-  runs: number; balls: number; fours: number; sixes: number;
-  isOut: boolean; outType?: string; bowlerUsername?: string; fielderUsername?: string;
-  didNotBat: boolean;
-}
-export interface BowlRecord {
-  balls: number; runs: number; wickets: number;
-  catches: number; runouts: number; stumpings: number;
-  catchesDropped: number; runoutsMissed: number; stumpingsMissed: number;
-}
-export interface FielderAssignment {
-  catch: string[]; runout: string[]; stump: string | null;
-}
-export interface InningsData {
-  battingTeam: 'A' | 'B';
-  runs: number; wickets: number; balls: number;
-  batting: Record<string, BatRecord>;
-  bowling: Record<string, BowlRecord>;
-  batterOrder: string[];
-  currentBatterUserId: string | null;
-  currentBowlerUserId: string | null;
-  fielders: FielderAssignment | null;
-  batterHistory: Record<string, number[]>;
-  pendingOverReset: boolean;
-}
-export interface PendingDismissal {
-  type: string;
-  batterUserId: string; bowlerUserId: string;
-  batterNum: number; bowlerNum: number;
-  fielderUserId: string | null;
-  overEndedOnThisBall: boolean;
-}
-export interface TeamGameState {
-  phase: TeamPhase;
-  totalOvers: number; totalWickets: number;
-  players: Record<string, { username: string }>;
-  teamNames: { A: string; B: string };
-  captains: { A: string | null; B: string | null };
-  teamPlayers: { A: string[]; B: string[] };
-  tossCaller: 'A' | 'B';
-  tossCall: 'heads' | 'tails' | null;
-  tossResult: 'heads' | 'tails' | null;
-  tossWinner: 'A' | 'B' | null;
-  battingTeam: 'A' | 'B' | null;
-  currentInnings: 1 | 2;
-  innings1: InningsData | null;
-  innings2: InningsData | null;
-  target: number | null;
-  lastMsg: string;
-  lastEvent: 'out' | 'six' | 'runs' | 'dot' | 'survived' | null;
-  pendingDismissal: PendingDismissal | null;
-  dismissalOptions: number[] | null;
-  resultMsg: string;
-  mvpUserId: string | null;
-  statsProcessed: boolean;
-}
-export interface TeamMatch {
-  id: string; join_code: string; host_id: string; host_username: string;
-  status: string; game_state: TeamGameState;
-  player_actions: Record<string, { type: string; value: unknown; ts: number }>;
-  created_at: string;
+function counter(arr: number[]): Record<number, number> {
+  const c: Record<number, number> = {};
+  for (const n of arr) c[n] = (c[n] || 0) + 1;
+  return c;
 }
 
-// ── Factories ─────────────────────────────────────────────────────────────────
-
-export function makeInitialTeamState(totalOvers: number, totalWickets: number): TeamGameState {
-  return {
-    phase: 'lobby', totalOvers, totalWickets, players: {},
-    teamNames: { A: 'Team Alpha', B: 'Team Bravo' },
-    captains: { A: null, B: null }, teamPlayers: { A: [], B: [] },
-    tossCaller: Math.random() < 0.5 ? 'A' : 'B',
-    tossCall: null, tossResult: null, tossWinner: null, battingTeam: null,
-    currentInnings: 1, innings1: null, innings2: null, target: null,
-    lastMsg: 'Waiting for players…', lastEvent: null,
-    pendingDismissal: null, dismissalOptions: null,
-    resultMsg: '', mvpUserId: null, statsProcessed: false,
-  };
-}
-
-export function makeInnings(battingTeam: 'A' | 'B', gs: TeamGameState): InningsData {
-  const batting: Record<string, BatRecord> = {};
-  const bowling: Record<string, BowlRecord> = {};
-  for (const uid of [...gs.teamPlayers.A, ...gs.teamPlayers.B]) {
-    batting[uid] = { runs: 0, balls: 0, fours: 0, sixes: 0, isOut: false, didNotBat: true };
-    bowling[uid] = { balls: 0, runs: 0, wickets: 0, catches: 0, runouts: 0, stumpings: 0, catchesDropped: 0, runoutsMissed: 0, stumpingsMissed: 0 };
+function weightedChoice(weights: number[]): number {
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < weights.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return i;
   }
-  return { battingTeam, runs: 0, wickets: 0, balls: 0, batting, bowling, batterOrder: [], currentBatterUserId: null, currentBowlerUserId: null, fielders: null, batterHistory: {}, pendingOverReset: false };
+  return weights.length - 1;
 }
 
-// ── Pure helpers ──────────────────────────────────────────────────────────────
-
-export function ballsToOvers(balls: number) { return `${Math.floor(balls / 6)}.${balls % 6}`; }
-export function fmtEco(runs: number, balls: number) { return balls ? ((runs / balls) * 6).toFixed(2) : '—'; }
-export function fmtSR(runs: number, balls: number) { return balls ? ((runs / balls) * 100).toFixed(1) : '—'; }
-
-function dType(num: number, hist: number[]): 'catch_chance' | 'runout_chance' | 'stump_chance' | 'bowled' {
-  const c = hist.filter(n => n === num).length;
-  if (c >= 3) return 'stump_chance';
-  if (c >= 2) return 'runout_chance';
-  return 'catch_chance';
-}
-
-function cloneInn(inn: InningsData): InningsData {
-  return {
-    ...inn,
-    batting: Object.fromEntries(Object.entries(inn.batting).map(([k, v]) => [k, { ...v }])),
-    bowling: Object.fromEntries(Object.entries(inn.bowling).map(([k, v]) => [k, { ...v }])),
-    batterOrder: [...inn.batterOrder],
-    batterHistory: Object.fromEntries(Object.entries(inn.batterHistory).map(([k, v]) => [k, [...v]])),
-  };
-}
-
-export function calcMvp(gs: TeamGameState, extraInn2?: InningsData): string | null {
-  const scores: Record<string, number> = {};
-  for (const inn of [gs.innings1, extraInn2 ?? gs.innings2]) {
-    if (!inn) continue;
-    for (const [uid, b] of Object.entries(inn.batting)) { if (!b.didNotBat) scores[uid] = (scores[uid] || 0) + b.runs + b.sixes * 2 + b.fours; }
-    for (const [uid, b] of Object.entries(inn.bowling)) { scores[uid] = (scores[uid] || 0) + b.wickets * 15 + (b.catches + b.runouts + b.stumpings) * 5; }
+export function detectCycle(history: number[], maxCycle = 3): number | null {
+  for (let cycleLen = 1; cycleLen <= maxCycle; cycleLen++) {
+    const needed = cycleLen * 2;
+    if (history.length < needed) continue;
+    const recent = history.slice(-needed);
+    const first = recent.slice(0, cycleLen);
+    const second = recent.slice(cycleLen);
+    if (first.every((v, i) => v === second[i])) {
+      return history[history.length - cycleLen];
+    }
   }
-  let best: string | null = null, bv = -1;
-  for (const [uid, s] of Object.entries(scores)) { if (s > bv) { bv = s; best = uid; } }
-  return best;
+  return null;
 }
 
-function wicketLimit(gs: TeamGameState, battingTeam: 'A' | 'B'): number {
-  return gs.teamPlayers[battingTeam].length || gs.totalWickets;
-}
+// ── Classic AI ────────────────────────────────────────────────────────────────
 
-export function canSelectBowler(gs: TeamGameState, inn: InningsData, bowlerUserId: string): boolean {
-  const bwlTeam: 'A' | 'B' = inn.battingTeam === 'A' ? 'B' : 'A';
-  if (!gs.teamPlayers[bwlTeam].includes(bowlerUserId)) return false;
-  if (inn.pendingOverReset && inn.currentBowlerUserId && bowlerUserId === inn.currentBowlerUserId) return false;
-  if (gs.teamPlayers[bwlTeam].length >= 5) {
-    const maxOvers = Math.max(1, Math.floor(gs.totalOvers / 5));
-    const ballsBowled = inn.bowling[bowlerUserId]?.balls ?? 0;
-    if (ballsBowled >= maxOvers * 6) return false;
+const AI_PATTERNS: Record<number, number[]> = {
+  0: [4, 5, 6], 1: [3, 4, 6], 2: [2, 6, 5],
+  3: [3, 1, 5], 4: [4, 5, 1], 5: [3, 6, 5], 6: [6, 3, 4],
+};
+
+export function aiBowlerChoice(
+  batterHistory: number[],
+  ownHistory: number[] = [],
+  target: number | null = null,
+  score = 0,
+  ballsRemaining: number | null = null,
+): number {
+  let base = 0.85;
+  if (target !== null && ballsRemaining && ballsRemaining > 0) {
+    const rr = (target - score) / (ballsRemaining / 6);
+    base = rr >= 5 ? 0.93 : rr <= 2 ? 0.8 : base;
+    if (ballsRemaining <= 6 && rr >= 6) base = 0.97;
   }
-  return true;
-}
-
-export function isInningsOver(gs: TeamGameState, inn: InningsData): boolean {
-  const maxWickets = wicketLimit(gs, inn.battingTeam);
-  if (maxWickets > 0 && inn.wickets >= maxWickets) return true;
-  if (inn.balls >= gs.totalOvers * 6) return true;
-  if (gs.target !== null && inn.runs >= gs.target) return true;
-  // No more batters available
-  const remaining = gs.teamPlayers[inn.battingTeam].filter(uid => inn.batting[uid]?.didNotBat);
-  if (remaining.length === 0 && inn.currentBatterUserId === null) return true;
-  return false;
-}
-
-function resultMsg(gs: TeamGameState, inn2: InningsData): string {
-  const i1 = gs.innings1!;
-  const batName = gs.teamNames[inn2.battingTeam];
-  const bowlName = gs.teamNames[i1.battingTeam];
-  if (gs.target !== null && inn2.runs >= gs.target) {
-    const w = Math.max(0, wicketLimit(gs, inn2.battingTeam) - inn2.wickets);
-    return `${batName} won by ${w} wicket${w !== 1 ? 's' : ''}!`;
+  const cyclePick = detectCycle(batterHistory);
+  if (cyclePick !== null && Math.random() < 0.85) return cyclePick;
+  if (ownHistory.length && Math.random() < 0.18) return ownHistory[ownHistory.length - 1];
+  if (ownHistory.length && batterHistory.length &&
+      batterHistory[batterHistory.length - 1] === ownHistory[ownHistory.length - 1]) {
+    let mirrorLen = 0;
+    for (let i = 1; i <= Math.min(batterHistory.length, ownHistory.length); i++) {
+      if (batterHistory[batterHistory.length - i] === ownHistory[ownHistory.length - i]) mirrorLen++;
+      else break;
+    }
+    if (Math.random() < Math.min(0.9, 0.5 + 0.2 * mirrorLen))
+      return ownHistory[ownHistory.length - 1];
   }
-  const diff = i1.runs - inn2.runs;
-  return diff === 0 ? 'Match Tied!' : `${bowlName} won by ${diff} run${diff !== 1 ? 's' : ''}!`;
+  if (batterHistory.length >= 2 &&
+      batterHistory[batterHistory.length - 1] === batterHistory[batterHistory.length - 2]) {
+    if (Math.random() < 0.8) return batterHistory[batterHistory.length - 1];
+  }
+  if (batterHistory.length >= 1 && Math.random() < base) {
+    const last = batterHistory[batterHistory.length - 1];
+    const opts = AI_PATTERNS[last];
+    return opts[Math.floor(Math.random() * opts.length)];
+  }
+  if (batterHistory.length >= 3) {
+    const recent = batterHistory.slice(-5);
+    const freq = counter(recent);
+    const favs = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k]) => Number(k));
+    if (favs.length) return favs[Math.floor(Math.random() * favs.length)];
+  }
+  return Math.floor(Math.random() * 7);
 }
 
-// ── Ball resolution ───────────────────────────────────────────────────────────
+export function aiBatterChoice(
+  bowlerHistory: number[],
+  ownHistory: number[] = [],
+  score = 0,
+  target: number | null = null,
+  ballsRemaining = 0,
+  wicketsRemaining = 1,
+  totalOvers = 1,
+): number {
+  const ballsTotal = totalOvers * 6;
+  const ballsBowled = ballsTotal - ballsRemaining;
+  const oversLeft = ballsRemaining / 6;
+  let aggression: number;
 
-export interface BallResult {
-  innings: InningsData; phase: TeamPhase;
-  pendingDismissal: PendingDismissal | null; dismissalOptions: number[] | null;
-  lastMsg: string; lastEvent: TeamGameState['lastEvent'];
-  newTarget?: number; resultMsg?: string; mvpUserId?: string | null;
-}
-
-export function resolveBall(gs: TeamGameState, inn: InningsData, batNum: number, bowlNum: number): BallResult {
-  const ni = cloneInn(inn);
-  const bUid = inn.currentBatterUserId!, wUid = inn.currentBowlerUserId!;
-  if (!ni.batterHistory[bUid]) ni.batterHistory[bUid] = [];
-  const histBefore = [...ni.batterHistory[bUid]];
-  ni.batterHistory[bUid].push(batNum);
-  ni.balls++;
-  ni.batting[bUid] = { ...ni.batting[bUid], balls: ni.batting[bUid].balls + 1, didNotBat: false };
-  ni.bowling[wUid] = { ...ni.bowling[wUid], balls: ni.bowling[wUid].balls + 1 };
-
-  const overEnded = ni.balls % 6 === 0;
-  let isOut = false, lastMsg = '', lastEvent: BallResult['lastEvent'] = null;
-  let pd: PendingDismissal | null = null, opts: number[] | null = null;
-  let newTarget: number | undefined, rmsg: string | undefined, mvp: string | null | undefined;
-
-  if (batNum === bowlNum) {
-    const dt = dType(batNum, histBefore);
-    if (dt === 'bowled') {
-      isOut = true; ni.wickets++;
-      ni.batting[bUid] = { ...ni.batting[bUid], isOut: true, outType: 'Bowled', bowlerUsername: gs.players[wUid]?.username };
-      ni.bowling[wUid] = { ...ni.bowling[wUid], wickets: ni.bowling[wUid].wickets + 1 };
-      lastMsg = `OUT! ${gs.players[bUid]?.username} b ${gs.players[wUid]?.username}`; lastEvent = 'out';
+  if (target === null) {
+    const progress = ballsTotal ? ballsBowled / ballsTotal : 0;
+    aggression = 0.3 + 0.5 * progress;
+    if (ballsRemaining <= 6) aggression = Math.max(aggression, 0.75);
+    if (wicketsRemaining <= 1) aggression *= 0.6;
+  } else {
+    const rr = oversLeft > 0 ? (target - score) / oversLeft : 99;
+    const runsNeeded = target - score;
+    if (runsNeeded <= 0) {
+      aggression = 0.05;
     } else {
-      const f = ni.fielders;
-      let fUid: string | null = null;
-      if (f) {
-        if (dt === 'catch_chance' && f.catch.length > 0) fUid = f.catch[Math.floor(Math.random() * f.catch.length)];
-        else if (dt === 'runout_chance' && f.runout.length > 0) fUid = f.runout[Math.floor(Math.random() * f.runout.length)];
-        else if (dt === 'stump_chance' && f.stump) fUid = f.stump;
+      aggression = Math.min(1.0, Math.max(0.05, rr / 6.0));
+      if (rr >= 9) aggression = 0.97;
+      else if (rr >= 6.5) aggression = Math.max(aggression, 0.9);
+      else if (rr >= 5) aggression = Math.max(aggression, 0.75);
+      if (ballsRemaining <= 6 && runsNeeded > 0) {
+        const npb = runsNeeded / ballsRemaining;
+        if (npb >= 1.5) aggression = 0.97;
+        else if (npb >= 1.0) aggression = Math.max(aggression, 0.85);
+        else if (npb >= 0.6) aggression = Math.max(aggression, 0.6);
       }
-      if (fUid) {
-        const o1 = Math.floor(Math.random() * 7); let o2 = Math.floor(Math.random() * 7);
-        while (o2 === o1) o2 = Math.floor(Math.random() * 7);
-        pd = { type: dt, batterUserId: bUid, bowlerUserId: wUid, batterNum: batNum, bowlerNum: bowlNum, fielderUserId: fUid, overEndedOnThisBall: overEnded };
-        opts = [o1, o2];
-        lastMsg = `${dt.replace('_chance', '').toUpperCase()} chance! ${gs.players[fUid]?.username} to respond!`;
-      } else {
-        ni.runs += batNum; ni.batting[bUid] = { ...ni.batting[bUid], runs: ni.batting[bUid].runs + batNum, fours: ni.batting[bUid].fours + (batNum === 4 ? 1 : 0), sixes: ni.batting[bUid].sixes + (batNum === 6 ? 1 : 0) };
-        ni.bowling[wUid] = { ...ni.bowling[wUid], runs: ni.bowling[wUid].runs + batNum };
-        lastMsg = `Survived (no fielder)! +${batNum} runs`; lastEvent = batNum === 6 ? 'six' : batNum === 0 ? 'dot' : 'runs';
-      }
+      if (rr <= 2.5 && oversLeft >= 2) aggression = Math.min(aggression, 0.35);
+      if (wicketsRemaining <= 1 && rr < 4.5) aggression *= 0.55;
     }
+  }
+  aggression = Math.max(0, Math.min(1, aggression));
+
+  const weights = Array.from({ length: 7 }, (_, n) =>
+    Math.max(1.0 + aggression * n * 1.5 - (1 - aggression) * n * 0.3, 0.05)
+  );
+
+  const cyclePick = detectCycle(bowlerHistory);
+  if (cyclePick !== null) weights[cyclePick] *= 0.15;
+  if (bowlerHistory.length >= 2 &&
+      bowlerHistory[bowlerHistory.length - 1] === bowlerHistory[bowlerHistory.length - 2]) {
+    weights[bowlerHistory[bowlerHistory.length - 1]] *= 0.1;
+  }
+  if (bowlerHistory.length && Math.random() < 0.12)
+    weights[bowlerHistory[bowlerHistory.length - 1]] *= 1.6;
+  if (ownHistory.length && bowlerHistory.length &&
+      ownHistory[ownHistory.length - 1] !== bowlerHistory[bowlerHistory.length - 1] &&
+      ownHistory[ownHistory.length - 1] >= 4) {
+    if (Math.random() < 0.35) weights[ownHistory[ownHistory.length - 1]] *= 1.8;
+  }
+  if (bowlerHistory.length >= 2) {
+    const freq = counter(bowlerHistory.slice(-5));
+    const avoidance = aggression < 0.8 ? 0.5 : 0.2;
+    Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 2).forEach(([k]) => {
+      weights[Number(k)] *= (1 - avoidance);
+    });
+  }
+
+  return weightedChoice(weights);
+}
+
+export function determineDismissalType(number: number, batterHistory: number[]): string {
+  if (Math.random() < 0.10) return 'stump_chance';
+  if (number >= 4 && number <= 6) {
+    const recent = batterHistory.slice(-5);
+    const highRatio = recent.length ? recent.filter(n => n >= 4 && n <= 6).length / recent.length : 0;
+    if (highRatio >= 0.6 && Math.random() < 0.55) return 'catch_chance';
+    return 'bowled';
+  } else if (number >= 1 && number <= 3) {
+    return 'runout_chance';
+  }
+  return 'bowled';
+}
+
+// ── Expert AI ─────────────────────────────────────────────────────────────────
+
+export type ModelWeights = Record<string, number>;
+
+const MODEL_NAMES = ['markov', 'recent', 'overall', 'pressure', 'psych', 'mirror'] as const;
+export type ModelName = typeof MODEL_NAMES[number];
+
+export function newModelWeights(): ModelWeights {
+  return Object.fromEntries(MODEL_NAMES.map(n => [n, 1.0]));
+}
+
+function dist(scores: NumMap = {}): NumMap {
+  const vals = Array.from({ length: 7 }, (_, n) => Math.max(0, scores[n] ?? 0));
+  const total = vals.reduce((a, b) => a + b, 0);
+  return Object.fromEntries(vals.map((v, n) => [n, total ? v / total : 1 / 7]));
+}
+
+function randomness(seq: number[]): number {
+  const recent = seq.slice(-18);
+  if (recent.length < 8) return 0.0;
+  const freq = counter(recent);
+  const probs = Object.values(freq).map(v => v / recent.length);
+  let entropy = -probs.reduce((s, p) => s + p * Math.log(p + 1e-9), 0) / Math.log(7);
+  if (detectCycle(recent, 4) !== null) entropy *= 0.82;
+  if (Math.max(...Object.values(freq)) >= recent.length * 0.34) entropy *= 0.82;
+  return Math.max(0, Math.min(1, entropy));
+}
+
+function blendCounter(scores: NumMap, c: Record<number, number>, scale = 1.0): void {
+  const total = Object.values(c).reduce((a, b) => a + b, 0);
+  if (!total) return;
+  for (const [k, v] of Object.entries(c)) scores[Number(k)] = (scores[Number(k)] || 0) + scale * v / total;
+}
+
+function recentDistribution(seq: number[]): [NumMap, number] {
+  const scores: NumMap = {};
+  for (const [w, scale] of [[5, 1.0], [10, 0.9], [20, 0.7], [50, 0.5]] as [number, number][]) {
+    const recent = seq.slice(-w);
+    if (!recent.length) continue;
+    const c = counter(recent);
+    for (const [k, v] of Object.entries(c))
+      scores[Number(k)] = (scores[Number(k)] || 0) + scale * v / recent.length;
+  }
+  const conf = Math.min(0.9, 0.18 + 0.72 * Math.min(seq.length, 20) / 20);
+  return [dist(scores), conf];
+}
+
+function overallDistribution(seq: number[]): [NumMap, number] {
+  const conf = Math.min(0.78, 0.12 + 0.66 * Math.min(seq.length, 50) / 50);
+  return [dist(counter(seq)), seq.length ? conf : 0.0];
+}
+
+function markovDistribution(seq: number[]): [NumMap, number] {
+  if (seq.length < 2) return [dist(), 0.0];
+  const prev = seq[seq.length - 1];
+  const scores: Record<number, number> = {};
+  for (let i = 1; i < seq.length; i++) {
+    if (seq[i - 1] === prev) scores[seq[i]] = (scores[seq[i]] || 0) + 1;
+  }
+  const hits = Object.values(scores).reduce((a, b) => a + b, 0);
+  const conf = hits ? Math.min(0.98, 0.16 + 0.18 * hits) : 0.0;
+  return [dist(scores), conf];
+}
+
+interface PsychCtx {
+  overall_seq?: number[];
+  last_outcome?: string;
+  after_boundary?: Record<number, number>;
+  after_wicket?: Record<number, number>;
+}
+
+function psychologyDistribution(seq: number[], ctx: PsychCtx): [NumMap, number] {
+  const scores: NumMap = {};
+  const overall = ctx.overall_seq || [];
+  const base = seq.length >= 6 ? seq : overall;
+  const freq = counter(base);
+  const favs = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  favs.forEach(([n], i) => { scores[Number(n)] = (scores[Number(n)] || 0) + Math.max(0.2, 1.1 - 0.25 * i); });
+  const cyc = detectCycle(seq, 4);
+  if (cyc !== null) scores[cyc] = (scores[cyc] || 0) + 1.25;
+  if (seq.length >= 2 && seq[seq.length - 1] === seq[seq.length - 2])
+    scores[seq[seq.length - 1]] = (scores[seq[seq.length - 1]] || 0) + 1.1;
+  if (seq.length >= 4 && seq[seq.length - 1] === seq[seq.length - 3] &&
+      seq[seq.length - 2] === seq[seq.length - 4])
+    scores[seq[seq.length - 2]] = (scores[seq[seq.length - 2]] || 0) + 0.95;
+  if (ctx.last_outcome === 'boundary' && ctx.after_boundary)
+    blendCounter(scores, ctx.after_boundary, 1.15);
+  if (ctx.last_outcome === 'wicket' && ctx.after_wicket)
+    blendCounter(scores, ctx.after_wicket, 1.25);
+  let conf = 0.15 + 0.15 * (favs.length > 0 ? 1 : 0) + 0.25 * (cyc !== null ? 1 : 0);
+  if (seq.length >= 2 && seq[seq.length - 1] === seq[seq.length - 2]) conf += 0.18;
+  if (seq.length >= 4 && seq[seq.length - 1] === seq[seq.length - 3] &&
+      seq[seq.length - 2] === seq[seq.length - 4]) conf += 0.15;
+  conf *= (1 - 0.55 * randomness(seq));
+  return [dist(scores), Math.max(0, Math.min(0.9, conf))];
+}
+
+interface PressureCtx {
+  role?: string;
+  target?: number | null;
+  score?: number;
+  balls_remaining?: number;
+  wickets_remaining?: number;
+  total_overs?: number;
+  last_outcome?: string;
+  after_wicket?: Record<number, number>;
+}
+
+function pressureDistribution(seq: number[], ctx: PressureCtx): [NumMap, number] {
+  const scores: NumMap = {};
+  const role = ctx.role;
+  const target = ctx.target ?? null;
+  const score = ctx.score ?? 0;
+  const ballsLeft = Math.max(1, ctx.balls_remaining ?? 0);
+  const wkts = Math.max(1, ctx.wickets_remaining ?? 1);
+  let urgency: number;
+  let conf: number;
+
+  if (role === 'bat') {
+    if (target === null) {
+      const totalBalls = Math.max(1, (ctx.total_overs ?? 1) * 6);
+      const phase = 1 - ballsLeft / totalBalls;
+      urgency = Math.max(0.35, Math.min(1.0, 0.35 + 0.6 * phase + (ballsLeft <= 18 ? 0.15 : 0)));
+    } else {
+      const runsNeeded = Math.max(target - score, 0);
+      const rr = runsNeeded / Math.max(ballsLeft / 6, 1 / 6);
+      urgency = Math.max(0.15, Math.min(1.0, rr / 6.5));
+      if (ballsLeft <= 12 && runsNeeded > 0) urgency = Math.max(urgency, Math.min(1.0, runsNeeded / ballsLeft));
+    }
+    if (wkts <= 2 && urgency < 0.9) urgency *= 0.78;
+    if (urgency >= 0.62) {
+      ([[3, 0.45], [4, 0.9], [5, 1.0], [6, 1.15]] as [number, number][]).forEach(([n, w]) => {
+        scores[n] = (scores[n] || 0) + w;
+      });
+      blendCounter(scores, counter(seq.filter(n => n >= 4)), 1.05);
+    } else {
+      ([[0, 0.2], [1, 1.0], [2, 1.05], [3, 0.8], [4, 0.35]] as [number, number][]).forEach(([n, w]) => {
+        scores[n] = (scores[n] || 0) + w;
+      });
+      blendCounter(scores, counter(seq.filter(n => n <= 3)), 0.9);
+    }
+    conf = 0.35 + 0.35 * Math.abs(urgency - 0.5);
   } else {
-    ni.runs += batNum; ni.batting[bUid] = { ...ni.batting[bUid], runs: ni.batting[bUid].runs + batNum, fours: ni.batting[bUid].fours + (batNum === 4 ? 1 : 0), sixes: ni.batting[bUid].sixes + (batNum === 6 ? 1 : 0) };
-    ni.bowling[wUid] = { ...ni.bowling[wUid], runs: ni.bowling[wUid].runs + batNum };
-    lastMsg = `+${batNum} (${batNum} vs ${bowlNum})`; lastEvent = batNum === 6 ? 'six' : batNum === 0 ? 'dot' : 'runs';
+    urgency = 0.3;
+    if (target !== null) {
+      const runsNeeded = Math.max(target - score, 0);
+      urgency = Math.max(0.2, Math.min(1.0, runsNeeded / Math.max(ballsLeft, 1) + (ballsLeft <= 12 ? 0.25 : 0)));
+    }
+    if (seq.length) scores[seq[seq.length - 1]] = (scores[seq[seq.length - 1]] || 0) + (urgency >= 0.55 ? 0.6 : 0.3);
+    blendCounter(scores, counter(seq.slice(-10)), 1.0 + 0.35 * urgency);
+    if (ctx.last_outcome === 'wicket' && ctx.after_wicket)
+      blendCounter(scores, ctx.after_wicket, 0.8);
+    conf = 0.28 + 0.32 * Math.min(1.0, seq.length / 10);
   }
+  return [dist(scores), Math.max(0, Math.min(0.82, conf))];
+}
 
-  if (!pd) {
-    if (isOut && overEnded) ni.pendingOverReset = true;
-    else if (!isOut && overEnded) ni.pendingOverReset = true;
-    if (isInningsOver(gs, ni)) {
-      if (gs.currentInnings === 1) { newTarget = ni.runs + 1; lastMsg += ` · Innings over! Target: ${newTarget}`; }
-      else { rmsg = resultMsg(gs, ni); mvp = calcMvp(gs, ni); }
+function mirrorDistribution(seq: number[], ownSeq: number[]): [NumMap, number] {
+  const scores: NumMap = {};
+  const window = 14;
+  const recentSeq = seq.slice(-window);
+  const recentOwn = ownSeq.slice(-(window + 1));
+  if (recentSeq.length < 4 || recentOwn.length < 5) return [dist(scores), 0.0];
+  const checks = Math.min(recentSeq.length, recentOwn.length - 1);
+  let hits = 0;
+  for (let i = 1; i <= checks; i++) {
+    if (recentSeq[recentSeq.length - i] === recentOwn[recentOwn.length - i - 1]) hits++;
+  }
+  if (!checks) return [dist(scores), 0.0];
+  const copyRate = hits / checks;
+  const baseline = 1 / 7;
+  if (copyRate >= 0.30 && ownSeq.length) {
+    const target = ownSeq[ownSeq.length - 1];
+    scores[target] = (scores[target] || 0) + 1.0 + 2.2 * copyRate;
+    const conf = Math.max(0, Math.min(0.85, (copyRate - baseline) * 1.35));
+    return [dist(scores), conf];
+  }
+  return [dist(scores), 0.0];
+}
+
+export interface ExpertCtx {
+  role: 'bat' | 'bowl';
+  score: number;
+  target: number | null;
+  balls_remaining: number;
+  wickets_remaining: number;
+  total_overs: number;
+  last_outcome?: string;
+  after_boundary?: Record<number, number>;
+  after_wicket?: Record<number, number>;
+  overall_seq: number[];
+  own_seq: number[];
+}
+
+export interface ExpertState {
+  weights: { bat: ModelWeights; bowl: ModelWeights };
+  lastDists: { bat: Record<string, NumMap> | null; bowl: Record<string, NumMap> | null };
+}
+
+export function newExpertState(): ExpertState {
+  return {
+    weights: { bat: newModelWeights(), bowl: newModelWeights() },
+    lastDists: { bat: null, bowl: null },
+  };
+}
+
+function expertPredict(
+  seq: number[],
+  ctx: ExpertCtx,
+  state: ExpertState,
+  globalSeed: number[] = [],
+): [NumMap, Record<string, number>] {
+  const role = ctx.role;
+  const rand = randomness(seq);
+  const overallSeq = ctx.overall_seq.length < 25 ? [...ctx.overall_seq, ...globalSeed.slice(0, 300)] : ctx.overall_seq;
+
+  const rawDists: Record<string, [NumMap, number]> = {
+    markov: markovDistribution(seq),
+    recent: recentDistribution(seq),
+    overall: overallDistribution(overallSeq.length ? overallSeq : seq),
+    pressure: pressureDistribution(seq, ctx),
+    psych: psychologyDistribution(seq, { overall_seq: ctx.overall_seq, last_outcome: ctx.last_outcome, after_boundary: ctx.after_boundary, after_wicket: ctx.after_wicket }),
+    mirror: mirrorDistribution(seq, ctx.own_seq),
+  };
+
+  const flavor: Record<string, number> = {
+    markov: 1 - 0.15 * rand, recent: 1 + 0.08 * rand,
+    overall: 1 + 0.25 * rand, pressure: 1.0,
+    psych: 1 - 0.5 * rand, mirror: 1.0,
+  };
+
+  const dynWeights = state.weights[role];
+  const totalDyn = Object.values(dynWeights).reduce((a, b) => a + b, 0) || 1.0;
+  const scores: NumMap = {};
+  const confidences: Record<string, number> = {};
+
+  for (const [name, [d, conf]] of Object.entries(rawDists)) {
+    confidences[name] = Math.round(conf * 1000) / 1000;
+    const weight = (dynWeights[name] / totalDyn) * (flavor[name] || 1.0);
+    for (const [nStr, p] of Object.entries(d)) {
+      const n = Number(nStr);
+      scores[n] = (scores[n] || 0) + weight * Math.max(0.05, conf) * p;
     }
   }
 
-  let phase: TeamPhase;
-  if (pd) phase = 'dismissal';
-  else if (rmsg) phase = 'result';
-  else if (newTarget) phase = 'innings_break';
-  else if (isInningsOver(gs, ni)) phase = gs.currentInnings === 1 ? 'innings_break' : 'result';
-  else if (isOut) phase = 'batting_setup';
-  else if (ni.pendingOverReset) phase = 'bowling_setup';
-  else phase = 'pick';
-
-  return { innings: ni, phase, pendingDismissal: pd, dismissalOptions: opts, lastMsg, lastEvent, newTarget, resultMsg: rmsg, mvpUserId: mvp };
+  state.lastDists[role] = Object.fromEntries(Object.entries(rawDists).map(([k, [d]]) => [k, d]));
+  return [dist(scores), confidences];
 }
 
-export interface DismissalResult {
-  innings: InningsData; phase: TeamPhase;
-  lastMsg: string; lastEvent: TeamGameState['lastEvent'];
-  resultMsg?: string; mvpUserId?: string | null;
+export function updateModelWeights(
+  role: 'bat' | 'bowl',
+  actual: number,
+  state: ExpertState,
+): void {
+  const dists = state.lastDists[role];
+  if (!dists) return;
+  const weights = state.weights[role];
+  const eta = 0.55;
+  const baseline = 1 / 7;
+  for (const [name, d] of Object.entries(dists)) {
+    const prob = Math.max(1e-6, d[actual] ?? baseline);
+    const relative = prob / baseline;
+    const w = (weights[name] || 1.0) * Math.pow(relative, eta);
+    weights[name] = Math.max(0.05, Math.min(8.0, w));
+  }
 }
 
-export function resolveDismissal(gs: TeamGameState, inn: InningsData, pd: PendingDismissal, fPick: number, botPick: number): DismissalResult {
-  const ni = cloneInn(inn);
-  const { batterUserId: bUid, bowlerUserId: wUid, batterNum, fielderUserId: fUid, overEndedOnThisBall } = pd;
-  let isOut = false, lastMsg = '', lastEvent: DismissalResult['lastEvent'] = null;
-  let rmsg: string | undefined, mvp: string | null | undefined;
+export function expertBowlerChoice(
+  playerHistory: number[],
+  ownHistory: number[] = [],
+  ctx: ExpertCtx,
+  state: ExpertState,
+): number {
+  const ctxWithOwn: ExpertCtx = { ...ctx, own_seq: ownHistory };
+  const [prediction] = expertPredict(playerHistory, ctxWithOwn, state);
+  const ranked = Object.entries(prediction).sort((a, b) => b[1] - a[1]).map(([k]) => Number(k));
+  if (playerHistory.length < 3) {
+    const top = ranked.slice(0, 3);
+    const ws = top.map(n => prediction[n]);
+    return top[weightedChoice(ws)];
+  }
+  let choice = ranked[0];
+  if (ownHistory.length >= 4 && ownHistory.slice(-4).every(x => x === choice) && ranked.length > 1)
+    choice = ranked[1];
+  return choice;
+}
 
-  if (fPick === botPick) {
-    isOut = true; ni.wickets++;
-    const bowlerName = gs.players[wUid]?.username ?? '';
-    const fielderName = fUid ? gs.players[fUid]?.username ?? '' : '';
-    const ot = pd.type === 'catch_chance' ? `c ${fielderName} b ${bowlerName}` : pd.type === 'runout_chance' ? 'Run Out' : `st ${fielderName} b ${bowlerName}`;
-    ni.batting[bUid] = { ...ni.batting[bUid], isOut: true, outType: ot, bowlerUsername: bowlerName, fielderUsername: fielderName };
-    ni.bowling[wUid] = { ...ni.bowling[wUid], wickets: ni.bowling[wUid].wickets + 1 };
-    if (fUid) {
-      if (pd.type === 'catch_chance') ni.bowling[fUid] = { ...ni.bowling[fUid], catches: ni.bowling[fUid].catches + 1 };
-      else if (pd.type === 'runout_chance') ni.bowling[fUid] = { ...ni.bowling[fUid], runouts: ni.bowling[fUid].runouts + 1 };
-      else ni.bowling[fUid] = { ...ni.bowling[fUid], stumpings: ni.bowling[fUid].stumpings + 1 };
-    }
-    lastMsg = `OUT! ${gs.players[bUid]?.username} ${ot}`; lastEvent = 'out';
-    if (overEndedOnThisBall) ni.pendingOverReset = true;
+export function expertBatterChoice(
+  playerHistory: number[],
+  ownHistory: number[] = [],
+  score: number,
+  target: number | null,
+  ballsRemaining: number,
+  wicketsRemaining: number,
+  totalOvers: number,
+  ctx: ExpertCtx,
+  state: ExpertState,
+): number {
+  const bowlCtx: ExpertCtx = {
+    ...ctx,
+    role: 'bowl',
+    score, target, balls_remaining: ballsRemaining,
+    wickets_remaining: wicketsRemaining, total_overs: totalOvers,
+    own_seq: ownHistory,
+  };
+  const [prediction] = expertPredict(playerHistory, bowlCtx, state);
+
+  let aggression: number;
+  if (target === null) {
+    const phase = 1 - ballsRemaining / Math.max(1, totalOvers * 6);
+    aggression = Math.max(0.4, Math.min(1.0, 0.4 + 0.55 * phase + (ballsRemaining <= 18 ? 0.2 : 0)));
   } else {
-    ni.runs += batterNum;
-    ni.batting[bUid] = { ...ni.batting[bUid], runs: ni.batting[bUid].runs + batterNum, fours: ni.batting[bUid].fours + (batterNum === 4 ? 1 : 0), sixes: ni.batting[bUid].sixes + (batterNum === 6 ? 1 : 0) };
-    ni.bowling[wUid] = { ...ni.bowling[wUid], runs: ni.bowling[wUid].runs + batterNum };
-    if (fUid) {
-      if (pd.type === 'catch_chance') ni.bowling[fUid] = { ...ni.bowling[fUid], catchesDropped: ni.bowling[fUid].catchesDropped + 1 };
-      else if (pd.type === 'runout_chance') ni.bowling[fUid] = { ...ni.bowling[fUid], runoutsMissed: ni.bowling[fUid].runoutsMissed + 1 };
-      else ni.bowling[fUid] = { ...ni.bowling[fUid], stumpingsMissed: ni.bowling[fUid].stumpingsMissed + 1 };
-    }
-    lastMsg = `Survived! +${batterNum} runs`; lastEvent = batterNum === 6 ? 'six' : batterNum === 0 ? 'dot' : 'runs';
-    ni.pendingOverReset = overEndedOnThisBall;
+    const runsNeeded = Math.max(target - score, 0);
+    if (runsNeeded <= 0) return 0;
+    const rr = runsNeeded / Math.max(ballsRemaining / 6, 1 / 6);
+    aggression = Math.max(0.25, Math.min(1.0, rr / 6.0));
+    if (ballsRemaining <= 12)
+      aggression = Math.max(aggression, Math.min(1.0, runsNeeded / Math.max(ballsRemaining, 1)));
+  }
+  if (wicketsRemaining <= 2 && aggression < 0.9) aggression *= 0.72;
+
+  const weights: NumMap = {
+    0: 0.05,
+    1: 0.3 + 0.1 * (1 - aggression),
+    2: 0.45 + 0.1 * (1 - aggression),
+    3: 0.55,
+    4: 0.7 + 0.5 * aggression,
+    5: 0.75 + 0.65 * aggression,
+    6: 0.7 + 0.85 * aggression,
+  };
+
+  const ranked = Object.entries(prediction).sort((a, b) => b[1] - a[1]);
+  ranked.forEach(([nStr, p], rank) => {
+    const n = Number(nStr);
+    const danger = p * (rank === 0 ? 2.5 : rank === 1 ? 1.8 : 1.0);
+    weights[n] = Math.max(0.01, (weights[n] || 0.05) * Math.max(0.01, 1.0 - danger * 1.6));
+  });
+
+  if (ownHistory.length) {
+    const last = ownHistory[ownHistory.length - 1];
+    if ((prediction[last] ?? 0) >= 0.18)
+      weights[last] = Math.max(0.005, (weights[last] || 0.01) * 0.1);
   }
 
-  if (isInningsOver(gs, ni)) {
-    if (gs.currentInnings === 2) { rmsg = resultMsg(gs, ni); mvp = calcMvp(gs, ni); }
-  }
-
-  let phase: TeamPhase;
-  if (rmsg) phase = 'result';
-  else if (isInningsOver(gs, ni)) phase = gs.currentInnings === 1 ? 'innings_break' : 'result';
-  else if (isOut) phase = 'batting_setup';
-  else if (ni.pendingOverReset) phase = 'bowling_setup';
-  else phase = 'pick';
-
-  return { innings: ni, phase, lastMsg, lastEvent, resultMsg: rmsg, mvpUserId: mvp };
-}
-
-// ── DB helpers ────────────────────────────────────────────────────────────────
-
-function genCode() { return Array.from({ length: 6 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join(''); }
-
-export async function createTeamMatch(hostId: string, hostUsername: string, totalOvers: number, totalWickets: number): Promise<TeamMatch | null> {
-  const gs = makeInitialTeamState(totalOvers, totalWickets);
-  gs.players[hostId] = { username: hostUsername };
-  gs.teamPlayers.A = [hostId];
-  gs.lastMsg = `${hostUsername} created the room`;
-  const { data, error } = await supabase.from('hc_team_matches').insert({ join_code: genCode(), host_id: hostId, host_username: hostUsername, status: 'lobby', game_state: gs, player_actions: {} }).select().single();
-  if (error) { console.error('createTeamMatch', error); return null; }
-  return data as TeamMatch;
-}
-
-export async function joinTeamMatch(joinCode: string, userId: string, username: string): Promise<TeamMatch | null> {
-  const { data: m, error } = await supabase.from('hc_team_matches').select('*').eq('join_code', joinCode.toUpperCase()).single();
-  if (error || !m) return null;
-  const gs: TeamGameState = m.game_state;
-  if (gs.phase !== 'lobby') return null;
-  const totalPlayers = gs.teamPlayers.A.length + gs.teamPlayers.B.length;
-  if (!gs.players[userId] && totalPlayers >= 22) return null;
-  if (!gs.players[userId]) {
-    gs.players[userId] = { username };
-    const nextTeam: 'A' | 'B' = gs.teamPlayers.A.length < gs.teamPlayers.B.length
-      ? 'A'
-      : gs.teamPlayers.B.length < gs.teamPlayers.A.length
-        ? 'B'
-        : totalPlayers % 2 === 0 ? 'A' : 'B';
-    gs.teamPlayers[nextTeam] = [...gs.teamPlayers[nextTeam], userId];
-    gs.lastMsg = `${username} joined ${gs.teamNames[nextTeam]}`;
-    await supabase.from('hc_team_matches').update({ game_state: gs }).eq('id', m.id);
-  }
-  const { data: up } = await supabase.from('hc_team_matches').select('*').eq('id', m.id).single();
-  return (up ?? null) as TeamMatch | null;
-}
-
-export async function getTeamMatch(id: string): Promise<TeamMatch | null> {
-  const { data } = await supabase.from('hc_team_matches').select('*').eq('id', id).single();
-  return (data ?? null) as TeamMatch | null;
-}
-
-export async function updateTeamMatchState(id: string, gs: TeamGameState, clearActions = false): Promise<void> {
-  const up: Record<string, unknown> = { game_state: gs };
-  if (clearActions) up.player_actions = {};
-  await supabase.from('hc_team_matches').update(up).eq('id', id);
-}
-
-export async function submitTeamAction(matchId: string, userId: string, type: string, value: unknown): Promise<void> {
-  const { error } = await (supabase.rpc as Function)('team_submit_action', { p_match_id: matchId, p_user_id: userId, p_type: type, p_value: value });
-  if (error) {
-    const { data } = await supabase.from('hc_team_matches').select('player_actions').eq('id', matchId).single();
-    const cur = (data?.player_actions ?? {}) as Record<string, unknown>;
-    cur[userId] = { type, value, ts: Date.now() };
-    await supabase.from('hc_team_matches').update({ player_actions: cur }).eq('id', matchId);
-  }
-}
-
-export function subscribeTeamMatch(matchId: string, cb: (m: TeamMatch) => void): RealtimeChannel {
-  return supabase.channel(`team:${matchId}`)
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'hc_team_matches', filter: `id=eq.${matchId}` }, p => cb(p.new as TeamMatch))
-    .subscribe();
-}
-
-export async function saveTeamMatchStats(gs: TeamGameState): Promise<void> {
-  if (!gs.innings1 || !gs.innings2) return;
-  const i1 = gs.innings1, i2 = gs.innings2;
-  const winner: 'A' | 'B' | 'tie' = i2.runs > i1.runs ? i2.battingTeam : i2.runs === i1.runs ? 'tie' : i1.battingTeam;
-  for (const [uid, { username }] of Object.entries(gs.players)) {
-    const team: 'A' | 'B' = gs.teamPlayers.A.includes(uid) ? 'A' : 'B';
-    const battingInn = i1.battingTeam === team ? i1 : i2;
-    const bowlingInn = i1.battingTeam === team ? i2 : i1;
-    const bat = battingInn.batting[uid]; const bowl = bowlingInn.bowling[uid];
-    if (!bat || !bowl) continue;
-    await upsertMpStats(username, uid, winner !== 'tie' && winner === team, winner === 'tie', {
-      bat_runs: bat.runs, bat_balls: bat.balls, bat_outs: bat.isOut ? 1 : 0, team_score: battingInn.runs,
-      bowl_wkts: bowl.wickets, bowl_runs: bowl.runs, bowl_balls: bowl.balls,
-      catches: bowl.catches + bowl.runouts + bowl.stumpings,
-    }, '');
-  }
+  const ws = Array.from({ length: 7 }, (_, n) => Math.max(weights[n] ?? 0, 0.005));
+  return weightedChoice(ws);
 }
