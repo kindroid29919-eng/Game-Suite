@@ -35,6 +35,7 @@ export interface InningsData {
   bowling: Record<string, BowlRecord>;
   batterOrder: string[];
   currentBatterUserId: string | null;
+  nonStrikerUserId: string | null;
   currentBowlerUserId: string | null;
   fielders: FielderAssignment | null;
   batterHistory: Record<string, number[]>;
@@ -101,7 +102,7 @@ export function makeInnings(battingTeam: 'A' | 'B', gs: TeamGameState): InningsD
     batting[uid] = { runs: 0, balls: 0, fours: 0, sixes: 0, isOut: false, didNotBat: true };
     bowling[uid] = { balls: 0, runs: 0, wickets: 0, catches: 0, runouts: 0, stumpings: 0, catchesDropped: 0, runoutsMissed: 0, stumpingsMissed: 0 };
   }
-  return { battingTeam, runs: 0, wickets: 0, balls: 0, batting, bowling, batterOrder: [], currentBatterUserId: null, currentBowlerUserId: null, fielders: null, batterHistory: {}, pendingOverReset: false };
+  return { battingTeam, runs: 0, wickets: 0, balls: 0, batting, bowling, batterOrder: [], currentBatterUserId: null, nonStrikerUserId: null, currentBowlerUserId: null, fielders: null, batterHistory: {}, pendingOverReset: false };
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -127,6 +128,18 @@ function cloneInn(inn: InningsData): InningsData {
   };
 }
 
+// Standard cricket strike rotation: odd runs (1,3,5) rotate strike; end of over also
+// rotates ends. If both happen on the same ball, they cancel out (no net change).
+function rotateStrikeIfNeeded(ni: InningsData, runsScored: number, overEnded: boolean) {
+  if (!ni.nonStrikerUserId) return; // lone batter — always faces, nothing to rotate
+  const oddRuns = runsScored % 2 === 1;
+  if (oddRuns !== overEnded) {
+    const tmp = ni.currentBatterUserId;
+    ni.currentBatterUserId = ni.nonStrikerUserId;
+    ni.nonStrikerUserId = tmp;
+  }
+}
+
 export function calcMvp(gs: TeamGameState, extraInn2?: InningsData): string | null {
   const scores: Record<string, number> = {};
   for (const inn of [gs.innings1, extraInn2 ?? gs.innings2]) {
@@ -139,27 +152,11 @@ export function calcMvp(gs: TeamGameState, extraInn2?: InningsData): string | nu
   return best;
 }
 
-function wicketLimit(gs: TeamGameState, battingTeam: 'A' | 'B'): number {
-  return gs.teamPlayers[battingTeam].length || gs.totalWickets;
-}
-
-export function canSelectBowler(gs: TeamGameState, inn: InningsData, bowlerUserId: string): boolean {
-  const bwlTeam: 'A' | 'B' = inn.battingTeam === 'A' ? 'B' : 'A';
-  if (!gs.teamPlayers[bwlTeam].includes(bowlerUserId)) return false;
-  if (inn.pendingOverReset && inn.currentBowlerUserId && bowlerUserId === inn.currentBowlerUserId) return false;
-  if (gs.teamPlayers[bwlTeam].length >= 5) {
-    const maxOvers = Math.max(1, Math.floor(gs.totalOvers / 5));
-    const ballsBowled = inn.bowling[bowlerUserId]?.balls ?? 0;
-    if (ballsBowled >= maxOvers * 6) return false;
-  }
-  return true;
-}
-
 export function isInningsOver(gs: TeamGameState, inn: InningsData): boolean {
-  const maxWickets = wicketLimit(gs, inn.battingTeam);
-  if (maxWickets > 0 && inn.wickets >= maxWickets) return true;
+  if (inn.wickets >= gs.totalWickets) return true;
   if (inn.balls >= gs.totalOvers * 6) return true;
-  if (gs.target !== null && inn.runs >= gs.target) return true;
+  if (gs.target !== null && inn.runs > gs.target) return true;
+  if (gs.target !== null && inn.runs === gs.target && (inn.wickets >= gs.totalWickets || inn.balls >= gs.totalOvers * 6)) return true;
   // No more batters available
   const remaining = gs.teamPlayers[inn.battingTeam].filter(uid => inn.batting[uid]?.didNotBat);
   if (remaining.length === 0 && inn.currentBatterUserId === null) return true;
@@ -170,12 +167,13 @@ function resultMsg(gs: TeamGameState, inn2: InningsData): string {
   const i1 = gs.innings1!;
   const batName = gs.teamNames[inn2.battingTeam];
   const bowlName = gs.teamNames[i1.battingTeam];
-  if (gs.target !== null && inn2.runs >= gs.target) {
-    const w = Math.max(0, wicketLimit(gs, inn2.battingTeam) - inn2.wickets);
+  if (gs.target !== null && inn2.runs > gs.target) {
+    const w = gs.totalWickets - inn2.wickets;
     return `${batName} won by ${w} wicket${w !== 1 ? 's' : ''}!`;
   }
+  if (gs.target !== null && inn2.runs === gs.target) return 'Match Tied!';
   const diff = i1.runs - inn2.runs;
-  return diff === 0 ? 'Match Tied!' : `${bowlName} won by ${diff} run${diff !== 1 ? 's' : ''}!`;
+  return `${bowlName} won by ${diff} run${diff !== 1 ? 's' : ''}!`;
 }
 
 // ── Ball resolution ───────────────────────────────────────────────────────────
@@ -227,12 +225,14 @@ export function resolveBall(gs: TeamGameState, inn: InningsData, batNum: number,
         ni.runs += batNum; ni.batting[bUid] = { ...ni.batting[bUid], runs: ni.batting[bUid].runs + batNum, fours: ni.batting[bUid].fours + (batNum === 4 ? 1 : 0), sixes: ni.batting[bUid].sixes + (batNum === 6 ? 1 : 0) };
         ni.bowling[wUid] = { ...ni.bowling[wUid], runs: ni.bowling[wUid].runs + batNum };
         lastMsg = `Survived (no fielder)! +${batNum} runs`; lastEvent = batNum === 6 ? 'six' : batNum === 0 ? 'dot' : 'runs';
+        rotateStrikeIfNeeded(ni, batNum, overEnded);
       }
     }
   } else {
     ni.runs += batNum; ni.batting[bUid] = { ...ni.batting[bUid], runs: ni.batting[bUid].runs + batNum, fours: ni.batting[bUid].fours + (batNum === 4 ? 1 : 0), sixes: ni.batting[bUid].sixes + (batNum === 6 ? 1 : 0) };
     ni.bowling[wUid] = { ...ni.bowling[wUid], runs: ni.bowling[wUid].runs + batNum };
     lastMsg = `+${batNum} (${batNum} vs ${bowlNum})`; lastEvent = batNum === 6 ? 'six' : batNum === 0 ? 'dot' : 'runs';
+    rotateStrikeIfNeeded(ni, batNum, overEnded);
   }
 
   if (!pd) {
@@ -293,6 +293,7 @@ export function resolveDismissal(gs: TeamGameState, inn: InningsData, pd: Pendin
     }
     lastMsg = `Survived! +${batterNum} runs`; lastEvent = batterNum === 6 ? 'six' : batterNum === 0 ? 'dot' : 'runs';
     ni.pendingOverReset = overEndedOnThisBall;
+    rotateStrikeIfNeeded(ni, batterNum, overEndedOnThisBall);
   }
 
   if (isInningsOver(gs, ni)) {
@@ -316,8 +317,6 @@ function genCode() { return Array.from({ length: 6 }, () => 'ABCDEFGHJKLMNPQRSTU
 export async function createTeamMatch(hostId: string, hostUsername: string, totalOvers: number, totalWickets: number): Promise<TeamMatch | null> {
   const gs = makeInitialTeamState(totalOvers, totalWickets);
   gs.players[hostId] = { username: hostUsername };
-  gs.teamPlayers.A = [hostId];
-  gs.lastMsg = `${hostUsername} created the room`;
   const { data, error } = await supabase.from('hc_team_matches').insert({ join_code: genCode(), host_id: hostId, host_username: hostUsername, status: 'lobby', game_state: gs, player_actions: {} }).select().single();
   if (error) { console.error('createTeamMatch', error); return null; }
   return data as TeamMatch;
@@ -328,19 +327,7 @@ export async function joinTeamMatch(joinCode: string, userId: string, username: 
   if (error || !m) return null;
   const gs: TeamGameState = m.game_state;
   if (gs.phase !== 'lobby') return null;
-  const totalPlayers = gs.teamPlayers.A.length + gs.teamPlayers.B.length;
-  if (!gs.players[userId] && totalPlayers >= 22) return null;
-  if (!gs.players[userId]) {
-    gs.players[userId] = { username };
-    const nextTeam: 'A' | 'B' = gs.teamPlayers.A.length < gs.teamPlayers.B.length
-      ? 'A'
-      : gs.teamPlayers.B.length < gs.teamPlayers.A.length
-        ? 'B'
-        : totalPlayers % 2 === 0 ? 'A' : 'B';
-    gs.teamPlayers[nextTeam] = [...gs.teamPlayers[nextTeam], userId];
-    gs.lastMsg = `${username} joined ${gs.teamNames[nextTeam]}`;
-    await supabase.from('hc_team_matches').update({ game_state: gs }).eq('id', m.id);
-  }
+  if (!gs.players[userId]) { gs.players[userId] = { username }; await supabase.from('hc_team_matches').update({ game_state: gs }).eq('id', m.id); }
   const { data: up } = await supabase.from('hc_team_matches').select('*').eq('id', m.id).single();
   return (up ?? null) as TeamMatch | null;
 }
@@ -354,6 +341,18 @@ export async function updateTeamMatchState(id: string, gs: TeamGameState, clearA
   const up: Record<string, unknown> = { game_state: gs };
   if (clearActions) up.player_actions = {};
   await supabase.from('hc_team_matches').update(up).eq('id', id);
+}
+
+// Applies a mid-over fielder change without disturbing any other player's
+// currently-pending action (e.g. a batter/bowler mid-way through picking a number).
+export async function applyFieldersUpdate(matchId: string, gs: TeamGameState, actions: TeamMatch['player_actions'], captainUserId: string, fielders: FielderAssignment): Promise<void> {
+  const inn = gs.currentInnings === 1 ? gs.innings1 : gs.innings2;
+  if (!inn) return;
+  const newInn: InningsData = { ...inn, fielders };
+  const newGs: TeamGameState = { ...gs, innings1: gs.currentInnings === 1 ? newInn : gs.innings1, innings2: gs.currentInnings === 2 ? newInn : gs.innings2 };
+  const newActions = { ...actions };
+  delete newActions[captainUserId];
+  await supabase.from('hc_team_matches').update({ game_state: newGs, player_actions: newActions }).eq('id', matchId);
 }
 
 export async function submitTeamAction(matchId: string, userId: string, type: string, value: unknown): Promise<void> {
