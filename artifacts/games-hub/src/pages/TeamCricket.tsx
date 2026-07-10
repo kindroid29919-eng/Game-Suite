@@ -7,7 +7,7 @@ import {
   makeInitialTeamState, makeInnings, ballsToOvers, fmtEco, fmtSR, calcMvp,
   resolveBall, resolveDismissal, isInningsOver,
   createTeamMatch, joinTeamMatch, getTeamMatch,
-  updateTeamMatchState, submitTeamAction, subscribeTeamMatch, saveTeamMatchStats,
+  updateTeamMatchState, submitTeamAction, subscribeTeamMatch, saveTeamMatchStats, applyFieldersUpdate,
 } from '@/lib/teamCricket';
 
 // ── Mini helpers ──────────────────────────────────────────────────────────────
@@ -316,12 +316,35 @@ function TossView({ gs, myUserId, onSubmit }: { gs: TeamGameState; myUserId: str
 
 // ── Captain picks ─────────────────────────────────────────────────────────────
 
-function BattingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: TeamGameState; inn: InningsData; myUserId: string; onSubmit: (uid: string) => void; submitted: boolean }) {
+function BattingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: TeamGameState; inn: InningsData; myUserId: string; onSubmit: (v: string | string[]) => void; submitted: boolean }) {
   const bTeam = inn.battingTeam;
   const iAmCaptain = gs.captains[bTeam] === myUserId;
   const available = gs.teamPlayers[bTeam].filter(uid => inn.batting[uid]?.didNotBat);
-  if (!iAmCaptain) return <WaitBanner msg={`${gs.teamNames[bTeam]} captain picking next batter…`} />;
+  const isOpeningPick = inn.batterOrder.length === 0;
+  const [openers, setOpeners] = useState<string[]>([]);
+
+  if (!iAmCaptain) return <WaitBanner msg={isOpeningPick ? `${gs.teamNames[bTeam]} captain picking openers…` : `${gs.teamNames[bTeam]} captain picking next batter…`} />;
   if (submitted) return <WaitBanner msg="Batter pick submitted, waiting…" />;
+
+  if (isOpeningPick) {
+    const toggle = (uid: string) => setOpeners(o => o.includes(uid) ? o.filter(x => x !== uid) : o.length < 2 ? [...o, uid] : o);
+    return (
+      <div className="flex flex-col gap-4 p-4 w-full max-w-md mx-auto">
+        <p className="font-mono text-[11px] text-[#6b6b9a] uppercase tracking-widest text-center">Pick Opening Pair ({openers.length}/2)</p>
+        {available.map(uid => (
+          <button key={uid} onClick={() => toggle(uid)}
+            className="font-mono text-[13px] px-3 py-2 rounded-xl text-left transition-all"
+            style={{ background: openers.includes(uid) ? `${TEAM_COLOR[bTeam]}20` : '#0c0c1e', border: `1.5px solid ${openers.includes(uid) ? TEAM_COLOR[bTeam] : '#2a2a4a'}`, color: openers.includes(uid) ? TEAM_COLOR[bTeam] : '#6b6b9a' }}>
+            {gs.players[uid]?.username} {openers[0] === uid ? '(strike)' : openers[1] === uid ? '(non-strike)' : ''}
+          </button>
+        ))}
+        <GlowBtn onClick={() => openers.length === 2 && onSubmit(openers)} color={TEAM_COLOR[bTeam]} disabled={openers.length !== 2} className="w-full text-base">
+          Confirm Openers
+        </GlowBtn>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4 p-4 w-full max-w-md mx-auto">
       <p className="font-mono text-[11px] text-[#6b6b9a] uppercase tracking-widest text-center">Pick Next Batter</p>
@@ -338,11 +361,14 @@ function BowlingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: Team
   const bwlTeam: 'A' | 'B' = inn.battingTeam === 'A' ? 'B' : 'A';
   const iAmCaptain = gs.captains[bwlTeam] === myUserId;
   const teamUids = gs.teamPlayers[bwlTeam];
+  const lastBowlerUid = inn.currentBowlerUserId; // still holds the previous over's bowler at this point
+  const fieldingEnabled = teamUids.length - 1 >= 3; // need at least 3 non-bowlers for any role to be meaningful
+  const fieldersAlreadySet = inn.fielders !== null;
 
   const [bowlerUid, setBowlerUid] = useState('');
-  const [catches, setCatches] = useState<string[]>([]);
-  const [runouts, setRunouts] = useState<string[]>([]);
-  const [stump, setStump] = useState<string | null>(null);
+  const [catches, setCatches] = useState<string[]>(inn.fielders?.catch ?? []);
+  const [runouts, setRunouts] = useState<string[]>(inn.fielders?.runout ?? []);
+  const [stump, setStump] = useState<string | null>(inn.fielders?.stump ?? null);
 
   const nonBowlers = bowlerUid ? teamUids.filter(uid => uid !== bowlerUid) : [];
   const role = (uid: string) => catches.includes(uid) ? 'C' : runouts.includes(uid) ? 'R' : stump === uid ? 'S' : '—';
@@ -355,8 +381,33 @@ function BowlingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: Team
     else if (r === 'S' && !stump) setStump(uid);
   };
 
-  if (!iAmCaptain) return <WaitBanner msg={`${gs.teamNames[bwlTeam]} captain setting fielders…`} />;
+  const isDisabledBowler = (uid: string) => uid === lastBowlerUid || (fieldersAlreadySet && inn.fielders!.stump === uid);
+  const reasonFor = (uid: string) => uid === lastBowlerUid ? '(bowled last over)' : (fieldersAlreadySet && inn.fielders!.stump === uid) ? '(wicketkeeper)' : '';
+
+  if (!iAmCaptain) return <WaitBanner msg={`${gs.teamNames[bwlTeam]} captain setting bowler…`} />;
   if (submitted) return <WaitBanner msg="Setup submitted, waiting for host…" />;
+
+  // After the first over, fielders are already locked in — only need this over's bowler.
+  if (fieldersAlreadySet) {
+    return (
+      <div className="flex flex-col gap-4 p-4 w-full max-w-md mx-auto">
+        <p className="font-mono text-[11px] text-[#6b6b9a] uppercase tracking-widest text-center">Pick This Over's Bowler</p>
+        <div className="flex flex-wrap gap-2 justify-center">
+          {teamUids.map(uid => (
+            <button key={uid} disabled={isDisabledBowler(uid)} onClick={() => setBowlerUid(uid)}
+              className="font-mono text-[11px] px-3 py-1.5 rounded-xl transition-all disabled:opacity-30"
+              style={{ background: bowlerUid === uid ? `${TEAM_COLOR[bwlTeam]}20` : '#0c0c1e', border: `1.5px solid ${bowlerUid === uid ? TEAM_COLOR[bwlTeam] : '#2a2a4a'}`, color: bowlerUid === uid ? TEAM_COLOR[bwlTeam] : '#6b6b9a' }}>
+              {gs.players[uid]?.username} {reasonFor(uid) && <span className="text-[8px]">{reasonFor(uid)}</span>}
+            </button>
+          ))}
+        </div>
+        <GlowBtn onClick={() => bowlerUid && onSubmit({ bowlerUserId: bowlerUid, fielders: inn.fielders! })} color="#00ff88" disabled={!bowlerUid} className="w-full text-base">
+          Confirm Bowler
+        </GlowBtn>
+        <p className="font-mono text-[9px] text-[#4a4a70] text-center">Fielding roles stay the same — change them anytime from the scoreboard screen.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4 p-4 w-full max-w-md mx-auto">
@@ -366,18 +417,19 @@ function BowlingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: Team
         <p className="font-mono text-[10px] text-[#6b6b9a]">Pick Bowler</p>
         <div className="flex flex-wrap gap-2">
           {teamUids.map(uid => (
-            <button key={uid} onClick={() => { setBowlerUid(uid); setCatches(c => c.filter(x => x !== uid)); setRunouts(r => r.filter(x => x !== uid)); if (stump === uid) setStump(null); }}
-              className="font-mono text-[11px] px-3 py-1.5 rounded-xl transition-all"
+            <button key={uid} disabled={isDisabledBowler(uid)}
+              onClick={() => { setBowlerUid(uid); setCatches(c => c.filter(x => x !== uid)); setRunouts(r => r.filter(x => x !== uid)); if (stump === uid) setStump(null); }}
+              className="font-mono text-[11px] px-3 py-1.5 rounded-xl transition-all disabled:opacity-30"
               style={{ background: bowlerUid === uid ? `${TEAM_COLOR[bwlTeam]}20` : '#0c0c1e', border: `1.5px solid ${bowlerUid === uid ? TEAM_COLOR[bwlTeam] : '#2a2a4a'}`, color: bowlerUid === uid ? TEAM_COLOR[bwlTeam] : '#6b6b9a' }}>
               {gs.players[uid]?.username}
             </button>
           ))}
         </div>
       </div>
-      {/* Assign fielders */}
-      {bowlerUid && nonBowlers.length > 0 && (
+      {/* Assign fielders — only if the team is big enough for roles to make sense */}
+      {bowlerUid && fieldingEnabled && nonBowlers.length > 0 && (
         <div className="flex flex-col gap-2">
-          <p className="font-mono text-[10px] text-[#6b6b9a]">Fielder Roles — C:{catches.length}/3 R:{runouts.length}/2 S:{stump ? 1 : 0}/1</p>
+          <p className="font-mono text-[10px] text-[#6b6b9a]">Fielder Roles (set once for the innings) — C:{catches.length}/3 R:{runouts.length}/2 S:{stump ? 1 : 0}/1</p>
           {nonBowlers.map(uid => {
             const cur = role(uid);
             return (
@@ -396,7 +448,10 @@ function BowlingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: Team
           })}
         </div>
       )}
-      <GlowBtn onClick={() => bowlerUid && onSubmit({ bowlerUserId: bowlerUid, fielders: { catch: catches, runout: runouts, stump } })} color="#00ff88" disabled={!bowlerUid} className="w-full text-base">
+      {bowlerUid && !fieldingEnabled && (
+        <p className="font-mono text-[10px] text-[#6b6b9a] text-center">Team too small for fielding roles — catches/run-outs/stumpings disabled this match.</p>
+      )}
+      <GlowBtn onClick={() => bowlerUid && onSubmit({ bowlerUserId: bowlerUid, fielders: fieldingEnabled ? { catch: catches, runout: runouts, stump } : { catch: [], runout: [], stump: null } })} color="#00ff88" disabled={!bowlerUid} className="w-full text-base">
         Confirm Setup
       </GlowBtn>
     </div>
@@ -405,16 +460,74 @@ function BowlingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: Team
 
 // ── Pick & Dismissal ──────────────────────────────────────────────────────────
 
-function PickView({ gs, inn, myUserId, onSubmit, submitted }: { gs: TeamGameState; inn: InningsData; myUserId: string; onSubmit: (n: number) => void; submitted: boolean }) {
+function FieldingEditor({ gs, inn, bwlTeam, onSave }: { gs: TeamGameState; inn: InningsData; bwlTeam: 'A' | 'B'; onSave: (f: FielderAssignment) => void }) {
+  const [open, setOpen] = useState(false);
+  const bowlerUid = inn.currentBowlerUserId;
+  const teamUids = gs.teamPlayers[bwlTeam];
+  const nonBowlers = bowlerUid ? teamUids.filter(uid => uid !== bowlerUid) : teamUids;
+  const [catches, setCatches] = useState<string[]>(inn.fielders?.catch ?? []);
+  const [runouts, setRunouts] = useState<string[]>(inn.fielders?.runout ?? []);
+  const [stump, setStump] = useState<string | null>(inn.fielders?.stump ?? null);
+  const fieldingEnabled = teamUids.length - 1 >= 3;
+
+  if (!fieldingEnabled) return null;
+
+  const role = (uid: string) => catches.includes(uid) ? 'C' : runouts.includes(uid) ? 'R' : stump === uid ? 'S' : '—';
+  const setRole = (uid: string, r: 'C' | 'R' | 'S' | '—') => {
+    setCatches(c => c.filter(x => x !== uid));
+    setRunouts(c => c.filter(x => x !== uid));
+    if (stump === uid) setStump(null);
+    if (r === 'C' && catches.length < 3) setCatches(c => [...c, uid]);
+    else if (r === 'R' && runouts.length < 2) setRunouts(c => [...c, uid]);
+    else if (r === 'S' && !stump) setStump(uid);
+  };
+
+  if (!open) return (
+    <button onClick={() => setOpen(true)} className="font-mono text-[9px] text-[#818cf8] underline underline-offset-2">
+      Edit Fielding
+    </button>
+  );
+
+  return (
+    <div className="flex flex-col gap-2 p-3 rounded-xl w-full" style={{ background: '#0c0c1e', border: '1px solid #2a2a4a' }}>
+      <p className="font-mono text-[9px] text-[#6b6b9a]">Fielder Roles — C:{catches.length}/3 R:{runouts.length}/2 S:{stump ? 1 : 0}/1</p>
+      {nonBowlers.map(uid => {
+        const cur = role(uid);
+        return (
+          <div key={uid} className="flex items-center gap-2">
+            <span className="flex-1 font-mono text-[11px] text-[#e2e2f2]">{gs.players[uid]?.username}</span>
+            {(['C', 'R', 'S', '—'] as const).map(r => (
+              <button key={r} onClick={() => setRole(uid, r)}
+                disabled={(r === 'C' && catches.length >= 3 && cur !== 'C') || (r === 'R' && runouts.length >= 2 && cur !== 'R') || (r === 'S' && !!stump && stump !== uid)}
+                className="font-mono text-[9px] w-6 h-6 rounded-lg transition-all"
+                style={{ background: cur === r ? '#818cf820' : '#06060f', border: `1px solid ${cur === r ? '#818cf8' : '#2a2a4a'}`, color: cur === r ? '#818cf8' : '#4a4a70' }}>
+                {r}
+              </button>
+            ))}
+          </div>
+        );
+      })}
+      <div className="flex gap-2">
+        <GlowBtn onClick={() => { onSave({ catch: catches, runout: runouts, stump }); setOpen(false); }} color="#00ff88" className="flex-1 text-[11px] py-1.5">Save</GlowBtn>
+        <button onClick={() => setOpen(false)} className="font-mono text-[10px] text-[#4a4a70]">Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function PickView({ gs, inn, myUserId, onSubmit, onFieldersUpdate, submitted }: { gs: TeamGameState; inn: InningsData; myUserId: string; onSubmit: (n: number) => void; onFieldersUpdate: (f: FielderAssignment) => void; submitted: boolean }) {
   const isBatter = inn.currentBatterUserId === myUserId;
   const isBowler = inn.currentBowlerUserId === myUserId;
   const batterName = gs.players[inn.currentBatterUserId ?? '']?.username ?? '?';
+  const nonStrikerName = inn.nonStrikerUserId ? gs.players[inn.nonStrikerUserId]?.username ?? '?' : null;
   const bowlerName = gs.players[inn.currentBowlerUserId ?? '']?.username ?? '?';
+  const bwlTeam: 'A' | 'B' = inn.battingTeam === 'A' ? 'B' : 'A';
+  const iAmBowlCaptain = gs.captains[bwlTeam] === myUserId;
 
   return (
     <div className="flex flex-col gap-4 p-4 items-center w-full max-w-md mx-auto">
       <div className="flex items-center justify-between w-full text-[11px] font-mono text-[#6b6b9a]">
-        <span>🏏 {batterName}</span>
+        <span>🏏 {batterName}*{nonStrikerName ? ` / ${nonStrikerName}` : ''}</span>
         <span>⚾ {bowlerName}</span>
       </div>
       <LastAction msg={gs.lastMsg} event={gs.lastEvent} />
@@ -430,6 +543,7 @@ function PickView({ gs, inn, myUserId, onSubmit, submitted }: { gs: TeamGameStat
       ) : (
         <WaitBanner msg="Ball in play…" />
       )}
+      {iAmBowlCaptain && <FieldingEditor gs={gs} inn={inn} bwlTeam={bwlTeam} onSave={onFieldersUpdate} />}
     </div>
   );
 }
@@ -700,7 +814,7 @@ export default function TeamCricket() {
           <BowlingSetupView gs={gs} inn={inn} myUserId={myUserId} onSubmit={(v) => submitAction('bowling_setup', v)} submitted={mySubmitted} />
         )}
         {gs.phase === 'pick' && inn && (
-          <PickView gs={gs} inn={inn} myUserId={myUserId} onSubmit={(n) => submitAction('ball_pick', n)} submitted={mySubmitted} />
+          <PickView gs={gs} inn={inn} myUserId={myUserId} onSubmit={(n) => submitAction('ball_pick', n)} onFieldersUpdate={(f) => submitAction('update_fielders', { fielders: f })} submitted={mySubmitted} />
         )}
         {gs.phase === 'dismissal' && inn && gs.pendingDismissal && (
           <DismissalView gs={gs} inn={inn} pd={gs.pendingDismissal} opts={gs.dismissalOptions ?? []} myUserId={myUserId} onSubmit={(n) => submitAction('fielder_pick', n)} submitted={mySubmitted} />
@@ -721,10 +835,50 @@ export default function TeamCricket() {
 
 // ── Host action processing (standalone, no stale closure) ─────────────────────
 
+// Shared "no more batters" resolution: promotes the surviving not-out partner to
+// bat alone if one exists (per the All Out Rule), otherwise genuinely ends the innings.
+function finalizeAfterWicket(gs: TeamGameState, newGs: TeamGameState, resInnings: InningsData, resResultMsg: string | undefined, resMvp: string | null | undefined) {
+  const bTeam = resInnings.battingTeam;
+  const remaining = gs.teamPlayers[bTeam].filter(uid => resInnings.batting[uid]?.didNotBat);
+  if (remaining.length > 0) return; // a replacement is available — normal batting_setup flow continues
+  if (resInnings.nonStrikerUserId !== null) {
+    // Lone batter continues alone — no need to wait for a captain's pick.
+    const soleUid = resInnings.nonStrikerUserId;
+    const promotedInn: InningsData = { ...resInnings, currentBatterUserId: soleUid, nonStrikerUserId: null };
+    newGs.innings1 = gs.currentInnings === 1 ? promotedInn : newGs.innings1;
+    newGs.innings2 = gs.currentInnings === 2 ? promotedInn : newGs.innings2;
+    newGs.phase = (!promotedInn.currentBowlerUserId || promotedInn.pendingOverReset) ? 'bowling_setup' : 'pick';
+    newGs.lastMsg = `${gs.players[soleUid]?.username} continues alone!`;
+  } else {
+    // Genuinely all out.
+    if (gs.currentInnings === 1) {
+      newGs.phase = 'innings_break';
+      newGs.target = resInnings.runs + 1;
+    } else {
+      newGs.phase = 'result';
+      if (resResultMsg) newGs.resultMsg = resResultMsg;
+      if (resMvp !== undefined) newGs.mvpUserId = resMvp;
+      if (!gs.statsProcessed) { newGs.statsProcessed = true; saveTeamMatchStats(newGs).catch(console.error); }
+    }
+  }
+}
+
 async function processMatchActions(match: TeamMatch): Promise<void> {
   const gs = match.game_state;
   const actions = match.player_actions;
   const inn = gs.currentInnings === 1 ? gs.innings1 : gs.innings2;
+
+  // Fielder changes can be submitted anytime during 'pick' phase, independent of
+  // whichever ball_pick actions are also mid-flight — handle it first, every tick.
+  if (gs.phase === 'pick' && inn) {
+    const bwlTeamForFielders: 'A' | 'B' = inn.battingTeam === 'A' ? 'B' : 'A';
+    const fieldCapId = gs.captains[bwlTeamForFielders];
+    if (fieldCapId && actions[fieldCapId]?.type === 'update_fielders') {
+      const { fielders } = actions[fieldCapId].value as { fielders: FielderAssignment };
+      await applyFieldersUpdate(match.id, gs, actions, fieldCapId, fielders);
+      return;
+    }
+  }
 
   switch (gs.phase) {
     case 'toss_call': {
@@ -750,11 +904,33 @@ async function processMatchActions(match: TeamMatch): Promise<void> {
       const bTeam = inn.battingTeam;
       const cid = gs.captains[bTeam];
       if (!cid || actions[cid]?.type !== 'pick_batter') return;
-      const batUid = actions[cid].value as string;
-      // Check if no more batters
       const avail = gs.teamPlayers[bTeam].filter(uid => inn.batting[uid]?.didNotBat);
+      const isOpeningPick = inn.batterOrder.length === 0;
+
+      if (isOpeningPick) {
+        const picks = actions[cid].value as string[];
+        if (!Array.isArray(picks) || picks.length !== 2) return;
+        const [strikerUid, nonStrikerUid] = picks;
+        if (strikerUid === nonStrikerUid || !avail.includes(strikerUid) || !avail.includes(nonStrikerUid)) return;
+        const newBatting = {
+          ...inn.batting,
+          [strikerUid]: { ...inn.batting[strikerUid], didNotBat: false },
+          [nonStrikerUid]: { ...inn.batting[nonStrikerUid], didNotBat: false },
+        };
+        const newInn: InningsData = { ...inn, currentBatterUserId: strikerUid, nonStrikerUserId: nonStrikerUid, batting: newBatting, batterOrder: [strikerUid, nonStrikerUid] };
+        const newGs = { ...gs, phase: 'bowling_setup' as TeamGameState['phase'], lastMsg: `${gs.players[strikerUid]?.username} & ${gs.players[nonStrikerUid]?.username} are in to open`, innings1: gs.currentInnings === 1 ? newInn : gs.innings1, innings2: gs.currentInnings === 2 ? newInn : gs.innings2 };
+        await updateTeamMatchState(match.id, newGs, true);
+        break;
+      }
+
+      const batUid = actions[cid].value as string;
       if (avail.length === 0 || !avail.includes(batUid)) return;
-      const newInn = { ...inn, currentBatterUserId: batUid, batting: { ...inn.batting, [batUid]: { ...inn.batting[batUid], didNotBat: false } }, batterOrder: inn.batterOrder.includes(batUid) ? inn.batterOrder : [...inn.batterOrder, batUid] };
+      // If the over also ended on the ball that brought this wicket, ends swap:
+      // the new batter takes the non-striker's spot, the survivor keeps strike.
+      const enterAsNonStriker = inn.pendingOverReset && inn.nonStrikerUserId !== null;
+      const newInn: InningsData = enterAsNonStriker
+        ? { ...inn, currentBatterUserId: inn.nonStrikerUserId, nonStrikerUserId: batUid, batting: { ...inn.batting, [batUid]: { ...inn.batting[batUid], didNotBat: false } }, batterOrder: [...inn.batterOrder, batUid] }
+        : { ...inn, currentBatterUserId: batUid, batting: { ...inn.batting, [batUid]: { ...inn.batting[batUid], didNotBat: false } }, batterOrder: [...inn.batterOrder, batUid] };
       const nextPhase: TeamGameState['phase'] = (!inn.currentBowlerUserId || inn.pendingOverReset) ? 'bowling_setup' : 'pick';
       const newGs = { ...gs, phase: nextPhase, lastMsg: `${gs.players[batUid]?.username} is in to bat`, innings1: gs.currentInnings === 1 ? newInn : gs.innings1, innings2: gs.currentInnings === 2 ? newInn : gs.innings2 };
       await updateTeamMatchState(match.id, newGs, true);
@@ -766,6 +942,9 @@ async function processMatchActions(match: TeamMatch): Promise<void> {
       const cid = gs.captains[bwlTeam];
       if (!cid || actions[cid]?.type !== 'bowling_setup') return;
       const { bowlerUserId, fielders } = actions[cid].value as { bowlerUserId: string; fielders: FielderAssignment };
+      // Reject an illegal pick: same bowler as last over, or the designated wicketkeeper.
+      if (bowlerUserId === inn.currentBowlerUserId) return;
+      if (inn.fielders && inn.fielders.stump === bowlerUserId) return;
       const newInn = { ...inn, currentBowlerUserId: bowlerUserId, fielders, pendingOverReset: false };
       const newGs = { ...gs, phase: 'pick' as TeamGameState['phase'], lastMsg: `${gs.players[bowlerUserId]?.username} is bowling`, innings1: gs.currentInnings === 1 ? newInn : gs.innings1, innings2: gs.currentInnings === 2 ? newInn : gs.innings2 };
       await updateTeamMatchState(match.id, newGs, true);
@@ -779,7 +958,8 @@ async function processMatchActions(match: TeamMatch): Promise<void> {
       if (!bowlAct || bowlAct.type !== 'ball_pick') return;
       const res = resolveBall(gs, inn, batAct.value as number, bowlAct.value as number);
       const newGs: TeamGameState = { ...gs, phase: res.phase, lastMsg: res.lastMsg, lastEvent: res.lastEvent, pendingDismissal: res.pendingDismissal, dismissalOptions: res.dismissalOptions, target: res.newTarget ?? gs.target, resultMsg: res.resultMsg ?? gs.resultMsg, mvpUserId: res.mvpUserId !== undefined ? res.mvpUserId : gs.mvpUserId, innings1: gs.currentInnings === 1 ? res.innings : gs.innings1, innings2: gs.currentInnings === 2 ? res.innings : gs.innings2 };
-      if (res.phase === 'result' && !gs.statsProcessed) { newGs.statsProcessed = true; saveTeamMatchStats(newGs).catch(console.error); }
+      if (res.phase === 'batting_setup') finalizeAfterWicket(gs, newGs, res.innings, res.resultMsg, res.mvpUserId);
+      if (newGs.phase === 'result' && !newGs.statsProcessed) { newGs.statsProcessed = true; saveTeamMatchStats(newGs).catch(console.error); }
       await updateTeamMatchState(match.id, newGs, true);
       break;
     }
@@ -791,16 +971,8 @@ async function processMatchActions(match: TeamMatch): Promise<void> {
       const botPick = gs.dismissalOptions![Math.floor(Math.random() * gs.dismissalOptions!.length)];
       const res = resolveDismissal(gs, inn!, pd, fAct.value as number, botPick);
       const newGs: TeamGameState = { ...gs, phase: res.phase, lastMsg: res.lastMsg, lastEvent: res.lastEvent, pendingDismissal: null, dismissalOptions: null, resultMsg: res.resultMsg ?? gs.resultMsg, mvpUserId: res.mvpUserId !== undefined ? res.mvpUserId : gs.mvpUserId, innings1: gs.currentInnings === 1 ? res.innings : gs.innings1, innings2: gs.currentInnings === 2 ? res.innings : gs.innings2 };
-      // Check no more batters after wicket
-      if (res.phase === 'batting_setup') {
-        const bTeam = res.innings.battingTeam;
-        const remaining = gs.teamPlayers[bTeam].filter(uid => res.innings.batting[uid]?.didNotBat);
-        if (remaining.length === 0) {
-          if (gs.currentInnings === 1) { const target = res.innings.runs + 1; newGs.phase = 'innings_break'; newGs.target = target; }
-          else { const { resultMsg: rm, mvpUserId: mvp } = res; newGs.phase = 'result'; if (rm) newGs.resultMsg = rm; if (mvp !== undefined) newGs.mvpUserId = mvp; if (!gs.statsProcessed) { newGs.statsProcessed = true; saveTeamMatchStats(newGs).catch(console.error); } }
-        }
-      }
-      if (res.phase === 'result' && !gs.statsProcessed) { newGs.statsProcessed = true; saveTeamMatchStats(newGs).catch(console.error); }
+      if (res.phase === 'batting_setup') finalizeAfterWicket(gs, newGs, res.innings, res.resultMsg, res.mvpUserId);
+      if (newGs.phase === 'result' && !newGs.statsProcessed) { newGs.statsProcessed = true; saveTeamMatchStats(newGs).catch(console.error); }
       await updateTeamMatchState(match.id, newGs, true);
       break;
     }
