@@ -362,7 +362,7 @@ function BowlingSetupView({ gs, inn, myUserId, onSubmit, submitted }: { gs: Team
   const iAmCaptain = gs.captains[bwlTeam] === myUserId;
   const teamUids = gs.teamPlayers[bwlTeam];
   const lastBowlerUid = inn.currentBowlerUserId; // still holds the previous over's bowler at this point
-  const fieldingEnabled = teamUids.length - 1 >= 3; // need at least 3 non-bowlers for any role to be meaningful
+  const fieldingEnabled = teamUids.length >= 6; // full fielding roles need a reasonably sized team
   const fieldersAlreadySet = inn.fielders !== null;
 
   const [bowlerUid, setBowlerUid] = useState('');
@@ -468,7 +468,7 @@ function FieldingEditor({ gs, inn, bwlTeam, onSave }: { gs: TeamGameState; inn: 
   const [catches, setCatches] = useState<string[]>(inn.fielders?.catch ?? []);
   const [runouts, setRunouts] = useState<string[]>(inn.fielders?.runout ?? []);
   const [stump, setStump] = useState<string | null>(inn.fielders?.stump ?? null);
-  const fieldingEnabled = teamUids.length - 1 >= 3;
+  const fieldingEnabled = teamUids.length >= 6;
 
   if (!fieldingEnabled) return null;
 
@@ -610,7 +610,7 @@ function InningsCard({ label, inn, gs }: { label: string; inn: InningsData; gs: 
   const bTeam: 'A' | 'B' = t === 'A' ? 'B' : 'A';
   const batters = [...inn.batterOrder.map(uid => ({ uid, bat: inn.batting[uid] })),
     ...Object.entries(inn.batting).filter(([uid, b]) => !inn.batterOrder.includes(uid) && !b.didNotBat).map(([uid, bat]) => ({ uid, bat }))];
-  const dnb = Object.entries(inn.batting).filter(([, b]) => b.didNotBat).map(([uid]) => gs.players[uid]?.username).filter(Boolean);
+  const dnb = gs.teamPlayers[t].filter(uid => inn.batting[uid]?.didNotBat).map(uid => gs.players[uid]?.username).filter(Boolean);
   const bowlers = Object.entries(inn.bowling).filter(([uid]) => gs.teamPlayers[bTeam].includes(uid) && inn.bowling[uid].balls > 0);
   return (
     <div className="bg-[#0c0c1e] border border-[#1e1e3a] rounded-2xl overflow-hidden">
@@ -801,7 +801,7 @@ export default function TeamCricket() {
             onUpdate={async (newGs) => { await updateTeamMatchState(match.id, newGs); await refresh(); }}
             onStart={async () => {
               const teamSize = Math.min(gs.teamPlayers.A.length, gs.teamPlayers.B.length);
-              await updateTeamMatchState(match.id, { ...gs, totalWickets: teamSize - 1, phase: 'toss_call' }, true);
+              await updateTeamMatchState(match.id, { ...gs, totalWickets: teamSize, phase: 'toss_call' }, true);
               await refresh();
             }} />
         )}
